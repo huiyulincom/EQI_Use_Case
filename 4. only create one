@@ -1,0 +1,254 @@
+library(sf)
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+# =========================================================
+# 1. User inputs
+# =========================================================
+gdb_path_points   <- "C:/your_folder/first.gdb"
+layer_points      <- "your_point_layer_name"      # contains Customer_Service_Requested
+
+gdb_path_polygons <- "C:/your_folder/second.gdb"
+layer_polygons    <- "your_polygon_layer_name"    # contains SCREEN
+
+output_gdb   <- "C:/your_folder/output_maps.gdb"
+output_layer <- "polygon_request_summary"
+
+field_request <- "Customer_Service_Requested"
+field_screen  <- "SCREEN"
+
+# Optional: polygon ID field
+# If your polygon layer already has a stable unique ID field, use it here.
+# Otherwise set to NULL and code will create one.
+polygon_id_field <- NULL
+# polygon_id_field <- "OBJECTID"
+
+# =========================================================
+# 2. Read data
+# =========================================================
+points_sf   <- st_read(gdb_path_points,   layer = layer_points,   quiet = FALSE)
+polygons_sf <- st_read(gdb_path_polygons, layer = layer_polygons, quiet = FALSE)
+
+# =========================================================
+# 3. Check required fields
+# =========================================================
+if (!(field_request %in% names(points_sf))) {
+  stop(
+    paste0(
+      "Field '", field_request, "' was not found in point layer.\n",
+      "Available fields:\n",
+      paste(names(points_sf), collapse = ", ")
+    )
+  )
+}
+
+if (!(field_screen %in% names(polygons_sf))) {
+  stop(
+    paste0(
+      "Field '", field_screen, "' was not found in polygon layer.\n",
+      "Available fields:\n",
+      paste(names(polygons_sf), collapse = ", ")
+    )
+  )
+}
+
+# =========================================================
+# 4. Match CRS
+# =========================================================
+if (st_crs(points_sf) != st_crs(polygons_sf)) {
+  polygons_sf <- st_transform(polygons_sf, st_crs(points_sf))
+}
+
+# =========================================================
+# 5. Create polygon_id
+# =========================================================
+if (!is.null(polygon_id_field)) {
+  if (!(polygon_id_field %in% names(polygons_sf))) {
+    stop(
+      paste0(
+        "polygon_id_field '", polygon_id_field, "' was not found in polygon layer."
+      )
+    )
+  }
+
+  polygons_sf <- polygons_sf %>%
+    mutate(polygon_id = as.character(.data[[polygon_id_field]]))
+} else {
+  polygons_sf <- polygons_sf %>%
+    mutate(polygon_id = as.character(row_number()))
+}
+
+# =========================================================
+# 6. Clean fields
+# =========================================================
+points_clean <- points_sf %>%
+  select(all_of(field_request)) %>%
+  mutate(
+    Customer_Service_Requested = as.character(Customer_Service_Requested),
+    Customer_Service_Requested = str_squish(Customer_Service_Requested),
+    Customer_Service_Requested = na_if(Customer_Service_Requested, ""),
+    Customer_Service_Requested = if_else(
+      is.na(Customer_Service_Requested),
+      "NA_Blank",
+      Customer_Service_Requested
+    )
+  )
+
+polygons_clean <- polygons_sf %>%
+  select(polygon_id, all_of(field_screen)) %>%
+  mutate(
+    SCREEN = as.character(SCREEN),
+    SCREEN = str_squish(SCREEN),
+    SCREEN = na_if(SCREEN, ""),
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "NA_Blank",
+      SCREEN
+    )
+  )
+
+# =========================================================
+# 7. Spatial join: assign each point to polygon
+# =========================================================
+joined_sf <- st_join(points_clean, polygons_clean, left = FALSE)
+
+# =========================================================
+# 8. Base counts
+# =========================================================
+
+# Total number of all matched requests
+total_requests_all <- nrow(joined_sf)
+
+# Total requests in each polygon (all categories combined)
+polygon_totals <- joined_sf %>%
+  st_drop_geometry() %>%
+  count(polygon_id, name = "poly_total_n")
+
+# Total requests for each category across all polygons
+category_totals <- joined_sf %>%
+  st_drop_geometry() %>%
+  count(Customer_Service_Requested, name = "cat_total_n")
+
+# Count by polygon + category
+polygon_category_counts <- joined_sf %>%
+  st_drop_geometry() %>%
+  count(polygon_id, Customer_Service_Requested, name = "cat_n") %>%
+  left_join(category_totals, by = "Customer_Service_Requested") %>%
+  mutate(
+    pct_cat = cat_n / cat_total_n,            # percent of this category total
+    pct_all = cat_n / total_requests_all      # percent of all requests
+  )
+
+# =========================================================
+# 9. Make safe short field prefixes for categories
+#    FileGDB field names should stay reasonably short
+# =========================================================
+make_safe_name <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_replace_all("[^a-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    str_sub(1, 20)
+}
+
+category_lookup <- category_totals %>%
+  mutate(cat_field = make_safe_name(Customer_Service_Requested))
+
+# Make names unique in case two categories collapse to same safe text
+make_unique_names <- function(x) {
+  ave(x, x, FUN = function(v) {
+    if (length(v) == 1) return(v)
+    paste0(v, "_", seq_along(v))
+  })
+}
+
+category_lookup$cat_field <- make_unique_names(category_lookup$cat_field)
+
+polygon_category_counts <- polygon_category_counts %>%
+  left_join(
+    category_lookup %>% select(Customer_Service_Requested, cat_field),
+    by = "Customer_Service_Requested"
+  )
+
+# =========================================================
+# 10. Build wide tables
+#     For each category, create:
+#     *_n        count in polygon
+#     *_pctcat   % of that category total
+#     *_pctall   % of all requests
+# =========================================================
+
+# count columns
+wide_n <- polygon_category_counts %>%
+  select(polygon_id, cat_field, cat_n) %>%
+  pivot_wider(
+    names_from = cat_field,
+    values_from = cat_n,
+    names_glue = "{cat_field}_n",
+    values_fill = 0
+  )
+
+# percent of category total columns
+wide_pctcat <- polygon_category_counts %>%
+  select(polygon_id, cat_field, pct_cat) %>%
+  pivot_wider(
+    names_from = cat_field,
+    values_from = pct_cat,
+    names_glue = "{cat_field}_pctcat",
+    values_fill = 0
+  )
+
+# percent of all requests columns
+wide_pctall <- polygon_category_counts %>%
+  select(polygon_id, cat_field, pct_all) %>%
+  pivot_wider(
+    names_from = cat_field,
+    values_from = pct_all,
+    names_glue = "{cat_field}_pctall",
+    values_fill = 0
+  )
+
+# =========================================================
+# 11. Join wide attributes back to polygon layer
+# =========================================================
+polygon_output <- polygons_clean %>%
+  left_join(polygon_totals, by = "polygon_id") %>%
+  left_join(wide_n, by = "polygon_id") %>%
+  left_join(wide_pctcat, by = "polygon_id") %>%
+  left_join(wide_pctall, by = "polygon_id") %>%
+  mutate(
+    poly_total_n = coalesce(poly_total_n, 0L)
+  )
+
+# Replace remaining NA in newly created numeric fields with 0
+new_fields <- setdiff(names(polygon_output), names(polygons_clean))
+new_fields <- setdiff(new_fields, "poly_total_n")
+
+for (fld in new_fields) {
+  if (is.numeric(polygon_output[[fld]])) {
+    polygon_output[[fld]][is.na(polygon_output[[fld]])] <- 0
+  }
+}
+
+# =========================================================
+# 12. Write one polygon feature class
+# =========================================================
+st_write(
+  obj = polygon_output,
+  dsn = output_gdb,
+  layer = output_layer,
+  delete_layer = TRUE,
+  quiet = FALSE
+)
+
+# =========================================================
+# 13. Optional: export category lookup table
+#     Helps you know which field prefix maps to which category
+# =========================================================
+lookup_csv <- sub("\\.gdb$", "_category_lookup.csv", output_gdb)
+readr::write_csv(category_lookup, lookup_csv)
+
+cat("\nDone.\n")
+cat("Output feature class:\n", file.path(output_gdb, output_layer), "\n")
+cat("Category lookup CSV:\n", lookup_csv, "\n")
