@@ -1,0 +1,165 @@
+library(sf)
+library(dplyr)
+library(stringr)
+library(readr)
+
+# =========================================================
+# 1. User inputs
+# =========================================================
+gdb_path_points <- "C:/your_folder/first.gdb"
+layer_points    <- "your_point_layer_name"      # contains Customer_Service_Requested
+
+gdb_path_eqi    <- "C:/your_folder/eqi.gdb"
+layer_eqi       <- "your_eqi_polygon_layer"     # contains SCREEN and POP20
+
+output_csv <- "C:/your_folder/customer_service_by_screen_with_pop.csv"
+
+field_request <- "Customer_Service_Requested"
+field_screen  <- "SCREEN"
+field_pop     <- "POP20"
+
+# =========================================================
+# 2. Read data
+# =========================================================
+points_sf <- st_read(gdb_path_points, layer = layer_points, quiet = FALSE)
+eqi_sf    <- st_read(gdb_path_eqi,    layer = layer_eqi,    quiet = FALSE)
+
+# =========================================================
+# 3. Check required fields
+# =========================================================
+if (!(field_request %in% names(points_sf))) {
+  stop(
+    paste0(
+      "Field '", field_request, "' was not found in point layer.\n",
+      "Available fields:\n",
+      paste(names(points_sf), collapse = ", ")
+    )
+  )
+}
+
+if (!(field_screen %in% names(eqi_sf))) {
+  stop(
+    paste0(
+      "Field '", field_screen, "' was not found in EQI layer.\n",
+      "Available fields:\n",
+      paste(names(eqi_sf), collapse = ", ")
+    )
+  )
+}
+
+if (!(field_pop %in% names(eqi_sf))) {
+  stop(
+    paste0(
+      "Field '", field_pop, "' was not found in EQI layer.\n",
+      "Available fields:\n",
+      paste(names(eqi_sf), collapse = ", ")
+    )
+  )
+}
+
+# =========================================================
+# 4. Match CRS
+# =========================================================
+if (st_crs(points_sf) != st_crs(eqi_sf)) {
+  eqi_sf <- st_transform(eqi_sf, st_crs(points_sf))
+}
+
+# =========================================================
+# 5. Clean attributes
+# =========================================================
+points_clean <- points_sf %>%
+  select(all_of(field_request)) %>%
+  mutate(
+    Customer_Service_Requested = as.character(Customer_Service_Requested),
+    Customer_Service_Requested = str_squish(Customer_Service_Requested),
+    Customer_Service_Requested = na_if(Customer_Service_Requested, ""),
+    Customer_Service_Requested = if_else(
+      is.na(Customer_Service_Requested),
+      "NA / Blank",
+      Customer_Service_Requested
+    )
+  )
+
+eqi_clean <- eqi_sf %>%
+  select(all_of(field_screen), all_of(field_pop)) %>%
+  mutate(
+    SCREEN = as.character(SCREEN),
+    SCREEN = str_squish(SCREEN),
+    SCREEN = na_if(SCREEN, ""),
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "NA / Blank",
+      SCREEN
+    ),
+    POP20 = suppressWarnings(as.numeric(POP20)),
+    POP20 = if_else(is.na(POP20), 0, POP20)
+  )
+
+# =========================================================
+# 6. Build SCREEN-level population table
+#    This is the denominator for each category x SCREEN row
+# =========================================================
+screen_population <- eqi_clean %>%
+  st_drop_geometry() %>%
+  group_by(SCREEN) %>%
+  summarise(
+    screen_pop20_for_rate = sum(POP20, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# =========================================================
+# 7. Spatial join: assign each point to EQI polygon
+# =========================================================
+joined_sf <- st_join(points_clean, eqi_clean %>% select(SCREEN), left = TRUE)
+
+joined_sf <- joined_sf %>%
+  mutate(
+    SCREEN = if_else(is.na(SCREEN), "Outside polygon / No match", SCREEN)
+  )
+
+# =========================================================
+# 8. Count cases by category and SCREEN
+# =========================================================
+summary_by_screen <- joined_sf %>%
+  st_drop_geometry() %>%
+  count(Customer_Service_Requested, SCREEN, name = "case_count") %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    total_cases_in_request_category = sum(case_count),
+    percent_of_category = case_count / total_cases_in_request_category,
+    percent_label = paste0(round(percent_of_category * 100, 2), "%")
+  ) %>%
+  ungroup()
+
+# =========================================================
+# 9. Join SCREEN-specific population and calculate rates
+# =========================================================
+summary_by_screen <- summary_by_screen %>%
+  left_join(screen_population, by = "SCREEN") %>%
+  mutate(
+    screen_pop20_for_rate = coalesce(screen_pop20_for_rate, 0),
+    case_per_person_in_screen = if_else(
+      screen_pop20_for_rate > 0,
+      case_count / screen_pop20_for_rate,
+      NA_real_
+    ),
+    case_per_1000_in_screen = if_else(
+      screen_pop20_for_rate > 0,
+      case_count / screen_pop20_for_rate * 1000,
+      NA_real_
+    ),
+    case_per_100k_in_screen = if_else(
+      screen_pop20_for_rate > 0,
+      case_count / screen_pop20_for_rate * 100000,
+      NA_real_
+    )
+  ) %>%
+  arrange(Customer_Service_Requested, desc(case_count))
+
+# =========================================================
+# 10. Export CSV
+# =========================================================
+write_csv(summary_by_screen, output_csv)
+
+cat("\nDone.\n")
+cat("Output saved to:\n", output_csv, "\n")
