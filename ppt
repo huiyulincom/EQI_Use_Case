@@ -1,0 +1,296 @@
+# Slide 1 — Title
+
+## Customer Service Request Spatial Analysis with EQI Overlay
+
+### Evaluating Spatial Distribution and Population-Normalized Service Request Intensity
+
+#### Analysis Components
+
+* Customer Service Request Point Data
+* EQI Polygon Overlay
+* SCREEN-Based Aggregation
+* Population-Normalized Metrics
+
+Prepared By: [Your Name]
+Date: [Presentation Date]
+
+---
+
+# Slide 2 — Project Objective
+
+## Primary Goal
+
+To better understand how customer service request categories are spatially distributed across different EQI SCREEN areas and evaluate whether service request intensity varies after accounting for population.
+
+## Key Questions
+
+* Where are different request categories concentrated?
+* How are requests distributed across SCREEN groups?
+* Do population-normalized request rates differ from raw request totals?
+* Are there differences in relative service burden across EQI contexts?
+
+## Motivation
+
+Raw request counts alone may not fully represent relative infrastructure or service burden. Population-normalized analysis allows for more meaningful comparison across areas with different population sizes.
+
+---
+
+# Slide 3 — Data Sources
+
+## 1. Customer Service Request Layer (Point Feature Class)
+
+### Geometry Type
+
+* Point
+
+### Key Attribute
+
+* Customer_Service_Requested
+
+### Description
+
+Represents individual customer service request cases, including categories such as:
+
+* Pothole
+* Graffiti
+* Illegal Dumping
+* Sidewalk Issues
+* Other service request types
+
+---
+
+## 2. EQI Layer (Polygon Feature Class)
+
+### Geometry Type
+
+* Polygon
+
+### Key Attributes
+
+* SCREEN
+* POP20
+
+### Description
+
+Represents EQI spatial screening categories and associated population data.
+
+---
+
+# Slide 4 — Methodology Overview
+
+## Step 1 — Data Cleaning
+
+* Standardized text fields
+* Removed blanks and inconsistent formatting
+* Handled missing values
+
+---
+
+## Step 2 — Spatial Join
+
+Customer service request points were spatially joined to EQI polygons in order to:
+
+* Assign each request to a SCREEN category
+* Associate requests with population context
+
+---
+
+## Step 3 — Aggregation
+
+Requests were aggregated by:
+
+* Request category
+* SCREEN category
+
+Metrics were calculated for each category × SCREEN combination.
+
+---
+
+## Step 4 — Population-Normalized Metrics
+
+Request rates were normalized using population associated with polygons where each request category actually occurred.
+
+---
+
+# Slide 5 — Key Metrics
+
+## 1. Request Distribution Percentage
+
+### Formula
+
+Percent of Category =
+Cases in SCREEN / Total Cases for that Category
+
+### Interpretation
+
+Shows how a request category is distributed across SCREEN groups.
+
+### Example
+
+“60% of pothole requests occur within Non-Screened Blocks.”
+
+---
+
+## 2. Population-Normalized Request Rate
+
+### Formula
+
+Request Rate =
+Case Count / Matched Polygon Population
+
+### Interpretation
+
+Measures relative request intensity after accounting for population.
+
+### Important Note
+
+Population denominators were calculated only from polygons where the request category actually occurred.
+
+This avoids dilution from unrelated areas and better reflects actual spatial exposure.
+
+---
+
+# Slide 6 — Why Population Normalization Matters
+
+## Raw Counts Alone Can Be Misleading
+
+Areas with larger populations may naturally generate more service requests.
+
+High request totals do not necessarily indicate higher relative burden.
+
+---
+
+## Population-Normalized Metrics Provide Additional Context
+
+Normalization allows comparison across SCREEN groups with different population sizes.
+
+This helps identify:
+
+* Relative service intensity
+* Potential infrastructure burden
+* Areas with elevated request rates
+
+---
+
+## Analytical Benefit
+
+The analysis distinguishes between:
+
+* Absolute request volume
+* Relative request intensity
+
+---
+
+# Slide 7 — Example Result: Broadway – Pothole Requests
+
+## Observations
+
+### Distribution of Requests
+
+* Approximately 61% of pothole requests occurred within Non-Screened Blocks.
+* Approximately 31% occurred within Transportation-Based Priority Populations.
+* Remaining requests were distributed across other SCREEN groups.
+
+---
+
+## Population-Normalized Findings
+
+After accounting for population:
+
+* Access to Destinations and Traffic Exposure areas showed relatively high request rates.
+* Some SCREEN categories exhibited comparable request intensity despite lower total case counts.
+
+---
+
+## Interpretation
+
+Absolute request volume and population-normalized intensity do not necessarily align.
+
+This suggests that raw counts alone may not fully represent relative infrastructure burden or service demand.
+
+---
+
+# Slide 8 — Visualization Strategy
+
+## Charts Used
+
+* Distribution percentage by SCREEN
+* Population-normalized request rate by SCREEN
+
+---
+
+## Purpose of Dual Visualization
+
+### Distribution Charts
+
+Show where requests are concentrated geographically.
+
+### Population-Normalized Charts
+
+Show relative request intensity after accounting for population.
+
+---
+
+## Analytical Value
+
+Using both views together provides a more balanced understanding of:
+
+* Spatial concentration
+* Relative burden
+* Potential prioritization areas
+
+---
+
+# Slide 9 — Potential Applications
+
+## Planning and Prioritization
+
+* Identify areas with elevated request intensity
+* Support maintenance prioritization
+* Inform resource allocation strategies
+
+---
+
+## Equity-Oriented Analysis
+
+* Compare request patterns across EQI SCREEN groups
+* Evaluate differences in relative service burden
+
+---
+
+## Future Enhancements
+
+* Corridor-level analysis
+* Temporal trend analysis
+* Integration with transportation infrastructure data
+* Additional demographic overlays
+
+---
+
+# Slide 10 — Next Steps
+
+## Future Analysis Opportunities
+
+### Spatial Visualization
+
+* Produce thematic maps by request category
+* Evaluate spatial clustering patterns
+
+### Expanded Metrics
+
+* Per capita request intensity
+* Temporal changes
+* Multi-category comparisons
+
+### Additional Integration
+
+* Transportation network layers
+* Maintenance history
+* Equity indicators
+* Infrastructure condition data
+
+---
+
+## Long-Term Goal
+
+Develop a scalable spatial analysis workflow to support data-informed and equity-informed decision making.
