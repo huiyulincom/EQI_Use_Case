@@ -1,3 +1,11 @@
+# =========================================================
+# CSR Category Charts by EQI SCREEN
+# Output:
+#   1) percent_of_category chart for each CSR Category
+#   2) case_per_1000_matched_pop chart for each CSR Category
+#      with category_average_per_1000 benchmark line
+# =========================================================
+
 library(readxl)
 library(dplyr)
 library(ggplot2)
@@ -8,7 +16,7 @@ library(scales)
 # 1. Input / Output
 # =========================================================
 
-input_excel <- "C:/your_folder/customer_service_by_screen.xlsx"
+input_excel <- "C:/your_folder/customer_service_by_screen_with_pop.xlsx"
 output_folder <- "C:/your_folder/CSR_Category_Charts"
 
 dir.create(output_folder, showWarnings = FALSE, recursive = TRUE)
@@ -29,6 +37,7 @@ df_clean <- df %>%
     EQI_SCREEN = as.character(`EQI SCREEN`),
     percent_of_category = as.numeric(percent_of_category),
     case_per_1000_matched_pop = as.numeric(case_per_1000_matched_pop),
+    category_average_per_1000 = as.numeric(category_average_per_1000),
     case_count = as.numeric(case_count)
   ) %>%
   filter(
@@ -38,13 +47,13 @@ df_clean <- df %>%
   )
 
 # =========================================================
-# 4. Get category list
+# 4. Get all CSR categories
 # =========================================================
 
 categories <- sort(unique(df_clean$CSR_Category))
 
 # =========================================================
-# 5. Function for safe file names
+# 5. Safe file name function
 # =========================================================
 
 make_safe_name <- function(x) {
@@ -56,13 +65,15 @@ make_safe_name <- function(x) {
 }
 
 # =========================================================
-# 6. Create charts for each CSR category
+# 6. Create charts for every CSR category
 # =========================================================
 
 for (cat_name in categories) {
   
   cat_df <- df_clean %>%
     filter(CSR_Category == cat_name)
+  
+  if (nrow(cat_df) == 0) next
   
   safe_cat <- make_safe_name(cat_name)
   
@@ -112,11 +123,20 @@ for (cat_name in categories) {
   )
   
   # -------------------------------------------------------
-  # Chart 2: Cases per 1,000 Matched Population by EQI SCREEN
+  # Chart 2: Cases per 1,000 Matched Population
+  #          with category average benchmark
   # -------------------------------------------------------
   
   cat_df_rate <- cat_df %>%
     arrange(desc(case_per_1000_matched_pop))
+  
+  category_avg <- unique(na.omit(cat_df_rate$category_average_per_1000))
+  
+  if (length(category_avg) == 0) {
+    category_avg <- NA_real_
+  } else {
+    category_avg <- category_avg[1]
+  }
   
   p_rate <- ggplot(
     cat_df_rate,
@@ -128,7 +148,7 @@ for (cat_name in categories) {
     geom_col() +
     coord_flip() +
     scale_y_continuous(
-      expand = expansion(mult = c(0, 0.15))
+      expand = expansion(mult = c(0, 0.20))
     ) +
     geom_text(
       aes(label = round(case_per_1000_matched_pop, 2)),
@@ -137,7 +157,7 @@ for (cat_name in categories) {
     ) +
     labs(
       title = paste0(cat_name, " — Population-Normalized Request Rate"),
-      subtitle = "Cases per 1,000 matched population by EQI SCREEN group",
+      subtitle = "Cases per 1,000 matched population; dashed line indicates category-wide average",
       x = "EQI SCREEN",
       y = "Cases per 1,000 Matched Population"
     ) +
@@ -146,6 +166,25 @@ for (cat_name in categories) {
       plot.title = element_text(face = "bold"),
       panel.grid.major.y = element_blank()
     )
+  
+  if (!is.na(category_avg)) {
+    p_rate <- p_rate +
+      geom_hline(
+        yintercept = category_avg,
+        color = "red",
+        linetype = "dashed",
+        linewidth = 1
+      ) +
+      annotate(
+        "text",
+        x = 1,
+        y = category_avg,
+        label = paste0("Category Avg = ", round(category_avg, 2)),
+        color = "red",
+        hjust = -0.1,
+        size = 4
+      )
+  }
   
   ggsave(
     filename = file.path(output_folder, paste0(safe_cat, "_case_per_1000_matched_pop.png")),
