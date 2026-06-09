@@ -1,8 +1,8 @@
 # =========================================================
 # CSR Category Charts by EQI SCREEN
 # Output:
-#   1) percent_of_category chart for each CSR Category
-#   2) case_per_1000_matched_pop chart for each CSR Category
+#   1) Percent of category chart for each CSR Category
+#   2) Cases per 1,000 matched population chart for each CSR Category
 #      with category_average_per_1000 benchmark line
 # =========================================================
 
@@ -26,6 +26,9 @@ dir.create(output_folder, showWarnings = FALSE, recursive = TRUE)
 # =========================================================
 
 df <- read_excel(input_excel)
+
+# Check column names
+print(names(df))
 
 # =========================================================
 # 3. Clean data
@@ -115,7 +118,10 @@ for (cat_name in categories) {
     )
   
   ggsave(
-    filename = file.path(output_folder, paste0(safe_cat, "_percent_of_category.png")),
+    filename = file.path(
+      output_folder,
+      paste0(safe_cat, "_percent_of_category.png")
+    ),
     plot = p_distribution,
     width = 9,
     height = 5.5,
@@ -138,6 +144,12 @@ for (cat_name in categories) {
     category_avg <- category_avg[1]
   }
   
+  max_y <- max(
+    cat_df_rate$case_per_1000_matched_pop,
+    category_avg,
+    na.rm = TRUE
+  )
+  
   p_rate <- ggplot(
     cat_df_rate,
     aes(
@@ -146,48 +158,58 @@ for (cat_name in categories) {
     )
   ) +
     geom_col() +
-    coord_flip() +
-    scale_y_continuous(
-      expand = expansion(mult = c(0, 0.20))
+    
+    # Benchmark line BEFORE coord_flip:
+    # because coord_flip() flips axes, this appears as a vertical line
+    geom_hline(
+      yintercept = category_avg,
+      color = "red",
+      linetype = "dashed",
+      linewidth = 1
     ) +
+    
+    coord_flip() +
+    
     geom_text(
       aes(label = round(case_per_1000_matched_pop, 2)),
       hjust = -0.05,
       size = 3.5
     ) +
+    
+    annotate(
+      "text",
+      x = 1,
+      y = category_avg,
+      label = paste0("Category Avg = ", round(category_avg, 2)),
+      color = "red",
+      hjust = -0.05,
+      vjust = -0.8,
+      size = 4
+    ) +
+    
+    scale_y_continuous(
+      limits = c(0, max_y * 1.25),
+      expand = expansion(mult = c(0, 0.05))
+    ) +
+    
     labs(
       title = paste0(cat_name, " — Population-Normalized Request Rate"),
-      subtitle = "Cases per 1,000 matched population; dashed line indicates category-wide average",
+      subtitle = "Cases per 1,000 matched population; red dashed line indicates category-wide average",
       x = "EQI SCREEN",
       y = "Cases per 1,000 Matched Population"
     ) +
+    
     theme_minimal(base_size = 12) +
     theme(
       plot.title = element_text(face = "bold"),
       panel.grid.major.y = element_blank()
     )
   
-  if (!is.na(category_avg)) {
-    p_rate <- p_rate +
-      geom_hline(
-        yintercept = category_avg,
-        color = "red",
-        linetype = "dashed",
-        linewidth = 1
-      ) +
-      annotate(
-        "text",
-        x = 1,
-        y = category_avg,
-        label = paste0("Category Avg = ", round(category_avg, 2)),
-        color = "red",
-        hjust = -0.1,
-        size = 4
-      )
-  }
-  
   ggsave(
-    filename = file.path(output_folder, paste0(safe_cat, "_case_per_1000_matched_pop.png")),
+    filename = file.path(
+      output_folder,
+      paste0(safe_cat, "_case_per_1000_matched_pop.png")
+    ),
     plot = p_rate,
     width = 9,
     height = 5.5,
