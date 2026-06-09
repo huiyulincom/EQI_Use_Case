@@ -1,0 +1,159 @@
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(scales)
+
+# =========================================================
+# 1. Input / Output
+# =========================================================
+
+input_excel <- "C:/your_folder/customer_service_by_screen.xlsx"
+output_folder <- "C:/your_folder/CSR_Category_Charts"
+
+dir.create(output_folder, showWarnings = FALSE, recursive = TRUE)
+
+# =========================================================
+# 2. Read Excel
+# =========================================================
+
+df <- read_excel(input_excel)
+
+# =========================================================
+# 3. Clean data
+# =========================================================
+
+df_clean <- df %>%
+  mutate(
+    CSR_Category = as.character(`CSR Category`),
+    EQI_SCREEN = as.character(`EQI SCREEN`),
+    percent_of_category = as.numeric(percent_of_category),
+    case_per_1000_matched_pop = as.numeric(case_per_1000_matched_pop),
+    case_count = as.numeric(case_count)
+  ) %>%
+  filter(
+    !is.na(CSR_Category),
+    !is.na(EQI_SCREEN),
+    EQI_SCREEN != "Outside polygon / No match"
+  )
+
+# =========================================================
+# 4. Get category list
+# =========================================================
+
+categories <- sort(unique(df_clean$CSR_Category))
+
+# =========================================================
+# 5. Function for safe file names
+# =========================================================
+
+make_safe_name <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_replace_all("[^a-z0-9]+", "_") %>%
+    str_replace_all("^_+|_+$", "") %>%
+    str_sub(1, 80)
+}
+
+# =========================================================
+# 6. Create charts for each CSR category
+# =========================================================
+
+for (cat_name in categories) {
+  
+  cat_df <- df_clean %>%
+    filter(CSR_Category == cat_name)
+  
+  safe_cat <- make_safe_name(cat_name)
+  
+  # -------------------------------------------------------
+  # Chart 1: Percent of Category by EQI SCREEN
+  # -------------------------------------------------------
+  
+  cat_df_percent <- cat_df %>%
+    arrange(desc(percent_of_category))
+  
+  p_distribution <- ggplot(
+    cat_df_percent,
+    aes(
+      x = reorder(EQI_SCREEN, percent_of_category),
+      y = percent_of_category
+    )
+  ) +
+    geom_col() +
+    coord_flip() +
+    scale_y_continuous(
+      labels = percent_format(accuracy = 1),
+      expand = expansion(mult = c(0, 0.15))
+    ) +
+    geom_text(
+      aes(label = percent(percent_of_category, accuracy = 0.1)),
+      hjust = -0.05,
+      size = 3.5
+    ) +
+    labs(
+      title = paste0(cat_name, " — Distribution by EQI SCREEN"),
+      subtitle = "Percent of this CSR category located in each EQI SCREEN group",
+      x = "EQI SCREEN",
+      y = "Percent of Category"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.major.y = element_blank()
+    )
+  
+  ggsave(
+    filename = file.path(output_folder, paste0(safe_cat, "_percent_of_category.png")),
+    plot = p_distribution,
+    width = 9,
+    height = 5.5,
+    dpi = 300
+  )
+  
+  # -------------------------------------------------------
+  # Chart 2: Cases per 1,000 Matched Population by EQI SCREEN
+  # -------------------------------------------------------
+  
+  cat_df_rate <- cat_df %>%
+    arrange(desc(case_per_1000_matched_pop))
+  
+  p_rate <- ggplot(
+    cat_df_rate,
+    aes(
+      x = reorder(EQI_SCREEN, case_per_1000_matched_pop),
+      y = case_per_1000_matched_pop
+    )
+  ) +
+    geom_col() +
+    coord_flip() +
+    scale_y_continuous(
+      expand = expansion(mult = c(0, 0.15))
+    ) +
+    geom_text(
+      aes(label = round(case_per_1000_matched_pop, 2)),
+      hjust = -0.05,
+      size = 3.5
+    ) +
+    labs(
+      title = paste0(cat_name, " — Population-Normalized Request Rate"),
+      subtitle = "Cases per 1,000 matched population by EQI SCREEN group",
+      x = "EQI SCREEN",
+      y = "Cases per 1,000 Matched Population"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.major.y = element_blank()
+    )
+  
+  ggsave(
+    filename = file.path(output_folder, paste0(safe_cat, "_case_per_1000_matched_pop.png")),
+    plot = p_rate,
+    width = 9,
+    height = 5.5,
+    dpi = 300
+  )
+}
+
+cat("Done. Charts saved to:\n", output_folder, "\n")
