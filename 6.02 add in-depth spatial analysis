@@ -373,40 +373,87 @@ cat("Rows in overrepresented-only table:", nrow(category_screen_overrepresented_
 
 
 # =========================================================
-# 6. Export CSV - safer version
+# 6. Export CSV - only summary and overrepresented results
 # =========================================================
 
-cat("\nStep 6 started: exporting CSV files...\n")
+cat("\nStep 6 started: exporting smaller result tables...\n")
 
-cat("\nWriting full table...\n")
-utils::write.csv(
-  category_screen_disproportionate_clean,
-  output_disproportionate_csv,
-  row.names = FALSE,
-  na = ""
+# Use a short local folder first to avoid OneDrive/path issues
+output_folder_local <- "C:/Users/s160418/Desktop/CSR_test_output"
+
+if (!dir.exists(output_folder_local)) {
+  dir.create(output_folder_local, recursive = TRUE)
+}
+
+output_disproportionate_summary_csv <- file.path(
+  output_folder_local,
+  "csr_category_screen_disproportionate_distribution_summary.csv"
 )
-cat("Finished full table:\n", output_disproportionate_csv, "\n")
+
+output_overrepresented_only_csv <- file.path(
+  output_folder_local,
+  "csr_category_screen_overrepresented_only.csv"
+)
 
 cat("\nWriting summary table...\n")
-utils::write.csv(
+readr::write_csv(
   category_screen_disproportionate_summary_clean,
-  output_disproportionate_summary_csv,
-  row.names = FALSE,
-  na = ""
+  output_disproportionate_summary_csv
 )
 cat("Finished summary table:\n", output_disproportionate_summary_csv, "\n")
 
 cat("\nWriting overrepresented-only table...\n")
-utils::write.csv(
+readr::write_csv(
   category_screen_overrepresented_only,
-  output_overrepresented_only_csv,
-  row.names = FALSE,
-  na = ""
+  output_overrepresented_only_csv
 )
 cat("Finished overrepresented-only table:\n", output_overrepresented_only_csv, "\n")
 
-cat("\nDone: disproportionate spatial distribution analysis.\n")
-cat("\nOutputs saved to:\n")
-cat(output_disproportionate_csv, "\n")
-cat(output_disproportionate_summary_csv, "\n")
-cat(output_overrepresented_only_csv, "\n")
+cat("\nDone.\n")
+
+# =========================================================
+# Optional: Export simplified full table
+# =========================================================
+
+output_disproportionate_simple_csv <- file.path(
+  "C:/Users/s160418/Desktop/CSR_test_output",
+  "csr_category_screen_disproportionate_distribution_simple.csv"
+)
+
+category_screen_disproportionate_simple <- category_screen_disproportionate_clean %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    observed_case_count,
+    total_cases_in_category,
+    observed_case_share_within_category,
+    observed_case_share_within_category_label,
+    
+    screen_group_block_count,
+    screen_group_block_share,
+    screen_group_block_share_label,
+    expected_cases_by_block_count,
+    excess_cases_by_block_count,
+    observed_expected_ratio_by_block_count,
+    
+    screen_group_population,
+    screen_group_population_share,
+    screen_group_population_share_label,
+    expected_cases_by_population,
+    excess_cases_by_population,
+    observed_expected_ratio_by_population,
+    
+    overrepresented_by_block_count,
+    overrepresented_by_population,
+    underrepresented_by_block_count,
+    underrepresented_by_population,
+    strongly_overrepresented,
+    strongly_underrepresented
+  )
+
+readr::write_csv(
+  category_screen_disproportionate_simple,
+  output_disproportionate_simple_csv
+)
+
+cat("Finished simplified full table:\n", output_disproportionate_simple_csv, "\n")
