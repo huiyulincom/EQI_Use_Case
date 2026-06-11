@@ -1,0 +1,606 @@
+library(sf)
+library(dplyr)
+library(stringr)
+library(readr)
+library(tidyr)
+
+# =========================================================
+# 1. User inputs
+# =========================================================
+
+gdb_path_points <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
+layer_points    <- "CSR_02_23_2026_Projected"
+
+gdb_path_eqi <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
+layer_eqi    <- "EQI_Shapefile_ExportFeatures"
+
+field_request <- "Customer_Service_Requested"
+field_screen  <- "SCREEN"
+field_pop     <- "POP20"
+
+# Optional: if EQI polygon layer already has a stable unique ID field, use it here
+eqi_id_field <- NULL
+# eqi_id_field <- "OBJECTID"
+
+# Use a short local output folder to avoid OneDrive issues
+output_folder <- "C:/Users/s160418/Desktop/CSR_Disproportionate_Output"
+
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+output_baseline_csv <- file.path(
+  output_folder,
+  "01_screen_baseline.csv"
+)
+
+output_full_csv <- file.path(
+  output_folder,
+  "02_category_screen_observed_expected.csv"
+)
+
+output_overrepresented_csv <- file.path(
+  output_folder,
+  "03_category_screen_overrepresented_only.csv"
+)
+
+output_summary_csv <- file.path(
+  output_folder,
+  "04_category_top_screen_summary.csv"
+)
+
+# Thresholds
+min_case_count <- 10
+overrepresented_ratio_threshold <- 1.5
+underrepresented_ratio_threshold <- 0.67
+
+
+# =========================================================
+# 2. Safe CSV writer
+#    This avoids some write_csv / OneDrive hanging issues.
+# =========================================================
+
+safe_write_csv <- function(df, path) {
+  
+  cat("\nPreparing to write:\n", path, "\n")
+  cat("Rows:", nrow(df), " Columns:", ncol(df), "\n")
+  
+  # Force plain data frame
+  df <- as.data.frame(df)
+  
+  # Remove sf geometry column if somehow present
+  if ("geometry" %in% names(df)) {
+    df$geometry <- NULL
+  }
+  
+  # Convert list columns to character
+  list_cols <- names(df)[sapply(df, is.list)]
+  if (length(list_cols) > 0) {
+    for (col in list_cols) {
+      df[[col]] <- as.character(df[[col]])
+    }
+  }
+  
+  # Clean Inf / NaN in numeric columns
+  numeric_cols <- names(df)[sapply(df, is.numeric)]
+  if (length(numeric_cols) > 0) {
+    for (col in numeric_cols) {
+      df[[col]][is.infinite(df[[col]]) | is.nan(df[[col]])] <- NA_real_
+    }
+  }
+  
+  # Remove existing file if it exists
+  if (file.exists(path)) {
+    file.remove(path)
+  }
+  
+  # Prefer data.table::fwrite if available; otherwise base write.csv
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    data.table::fwrite(
+      df,
+      file = path,
+      na = ""
+    )
+  } else {
+    utils::write.csv(
+      df,
+      file = path,
+      row.names = FALSE,
+      na = ""
+    )
+  }
+  
+  cat("Finished writing:\n", path, "\n")
+}
+
+
+# =========================================================
+# 3. Read data
+# =========================================================
+
+cat("\nReading point layer...\n")
+points_sf <- st_read(gdb_path_points, layer = layer_points, quiet = FALSE)
+
+cat("\nReading EQI polygon layer...\n")
+eqi_sf <- st_read(gdb_path_eqi, layer = layer_eqi, quiet = FALSE)
+
+
+# =========================================================
+# 4. Check required fields
+# =========================================================
+
+if (!(field_request %in% names(points_sf))) {
+  stop(
+    paste0(
+      "Field '", field_request, "' was not found in point layer.\n",
+      "Available fields:\n",
+      paste(names(points_sf), collapse = ", ")
+    )
+  )
+}
+
+if (!(field_screen %in% names(eqi_sf))) {
+  stop(
+    paste0(
+      "Field '", field_screen, "' was not found in EQI layer.\n",
+      "Available fields:\n",
+      paste(names(eqi_sf), collapse = ", ")
+    )
+  )
+}
+
+if (!(field_pop %in% names(eqi_sf))) {
+  stop(
+    paste0(
+      "Field '", field_pop, "' was not found in EQI layer.\n",
+      "Available fields:\n",
+      paste(names(eqi_sf), collapse = ", ")
+    )
+  )
+}
+
+
+# =========================================================
+# 5. Match CRS
+# =========================================================
+
+if (st_crs(points_sf) != st_crs(eqi_sf)) {
+  eqi_sf <- st_transform(eqi_sf, st_crs(points_sf))
+}
+
+
+# =========================================================
+# 6. Create unique EQI polygon ID
+# =========================================================
+
+if (!is.null(eqi_id_field)) {
+  
+  if (!(eqi_id_field %in% names(eqi_sf))) {
+    stop(
+      paste0(
+        "eqi_id_field '", eqi_id_field, "' was not found in EQI layer."
+      )
+    )
+  }
+  
+  eqi_sf <- eqi_sf %>%
+    mutate(eqi_poly_id = as.character(.data[[eqi_id_field]]))
+  
+} else {
+  
+  eqi_sf <- eqi_sf %>%
+    mutate(eqi_poly_id = as.character(row_number()))
+}
+
+
+# =========================================================
+# 7. Clean point and EQI attributes
+# =========================================================
+
+points_clean <- points_sf %>%
+  select(all_of(field_request)) %>%
+  mutate(
+    Customer_Service_Requested = as.character(.data[[field_request]]),
+    Customer_Service_Requested = str_squish(Customer_Service_Requested),
+    Customer_Service_Requested = na_if(Customer_Service_Requested, ""),
+    Customer_Service_Requested = if_else(
+      is.na(Customer_Service_Requested),
+      "NA / Blank",
+      Customer_Service_Requested
+    )
+  )
+
+eqi_clean <- eqi_sf %>%
+  select(eqi_poly_id, all_of(field_screen), all_of(field_pop)) %>%
+  mutate(
+    SCREEN = as.character(.data[[field_screen]]),
+    SCREEN = str_squish(SCREEN),
+    SCREEN = na_if(SCREEN, ""),
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "NA / Blank",
+      SCREEN
+    ),
+    POP20 = suppressWarnings(as.numeric(.data[[field_pop]])),
+    POP20 = if_else(is.na(POP20), 0, POP20)
+  )
+
+
+# =========================================================
+# 8. Spatial join: assign each CSR point to EQI polygon
+# =========================================================
+
+cat("\nRunning spatial join...\n")
+
+joined_sf <- st_join(points_clean, eqi_clean, left = TRUE)
+
+joined_df <- joined_sf %>%
+  st_drop_geometry() %>%
+  mutate(
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "Outside polygon / No match",
+      SCREEN
+    ),
+    eqi_poly_id = if_else(
+      is.na(eqi_poly_id),
+      "No_match",
+      eqi_poly_id
+    ),
+    POP20 = if_else(
+      is.na(POP20),
+      0,
+      POP20
+    )
+  )
+
+cat("\nSpatial join finished.\n")
+cat("Joined rows:", nrow(joined_df), "\n")
+
+
+# =========================================================
+# 9. Build SCREEN baseline
+#
+# This is the expected distribution baseline.
+# It tells us how much of the EQI universe belongs to each SCREEN group.
+#
+# Two baselines:
+# 1. Block-count baseline
+# 2. Population baseline
+# =========================================================
+
+screen_baseline <- eqi_clean %>%
+  st_drop_geometry() %>%
+  filter(
+    !is.na(SCREEN)
+  ) %>%
+  group_by(SCREEN) %>%
+  summarise(
+    screen_group_block_count = n_distinct(eqi_poly_id),
+    screen_group_population = sum(POP20, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    total_eqi_block_count = sum(screen_group_block_count, na.rm = TRUE),
+    total_eqi_population = sum(screen_group_population, na.rm = TRUE),
+    
+    screen_group_block_share =
+      screen_group_block_count / total_eqi_block_count,
+    
+    screen_group_population_share =
+      if_else(
+        total_eqi_population > 0,
+        screen_group_population / total_eqi_population,
+        NA_real_
+      ),
+    
+    screen_group_block_share_label =
+      paste0(round(screen_group_block_share * 100, 2), "%"),
+    
+    screen_group_population_share_label =
+      paste0(round(screen_group_population_share * 100, 2), "%")
+  ) %>%
+  arrange(SCREEN)
+
+cat("\nSCREEN baseline created.\n")
+print(screen_baseline)
+
+
+# =========================================================
+# 10. Observed category x SCREEN cases
+# =========================================================
+
+observed_category_screen_raw <- joined_df %>%
+  filter(
+    !is.na(Customer_Service_Requested),
+    !is.na(SCREEN),
+    SCREEN != "Outside polygon / No match"
+  ) %>%
+  count(
+    Customer_Service_Requested,
+    SCREEN,
+    name = "observed_case_count"
+  )
+
+# Make complete category x SCREEN table.
+# This keeps zero-case SCREEN groups too.
+all_categories <- observed_category_screen_raw %>%
+  distinct(Customer_Service_Requested)
+
+all_screens <- screen_baseline %>%
+  distinct(SCREEN)
+
+observed_category_screen <- tidyr::crossing(
+  all_categories,
+  all_screens
+) %>%
+  left_join(
+    observed_category_screen_raw,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  mutate(
+    observed_case_count = replace_na(observed_case_count, 0L)
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    total_cases_in_category = sum(observed_case_count),
+    observed_case_share_within_category =
+      if_else(
+        total_cases_in_category > 0,
+        observed_case_count / total_cases_in_category,
+        NA_real_
+      ),
+    observed_case_share_within_category_label =
+      paste0(round(observed_case_share_within_category * 100, 2), "%")
+  ) %>%
+  ungroup()
+
+
+# =========================================================
+# 11. Observed vs expected analysis
+# =========================================================
+
+category_screen_observed_expected <- observed_category_screen %>%
+  left_join(
+    screen_baseline,
+    by = "SCREEN"
+  ) %>%
+  mutate(
+    # -----------------------------------------------------
+    # Expected cases by block-count baseline
+    # -----------------------------------------------------
+    expected_cases_by_block_count =
+      total_cases_in_category * screen_group_block_share,
+    
+    observed_expected_ratio_by_block_count =
+      if_else(
+        expected_cases_by_block_count > 0,
+        observed_case_count / expected_cases_by_block_count,
+        NA_real_
+      ),
+    
+    excess_cases_by_block_count =
+      observed_case_count - expected_cases_by_block_count,
+    
+    # -----------------------------------------------------
+    # Expected cases by population baseline
+    # -----------------------------------------------------
+    expected_cases_by_population =
+      total_cases_in_category * screen_group_population_share,
+    
+    observed_expected_ratio_by_population =
+      if_else(
+        expected_cases_by_population > 0,
+        observed_case_count / expected_cases_by_population,
+        NA_real_
+      ),
+    
+    excess_cases_by_population =
+      observed_case_count - expected_cases_by_population,
+    
+    # -----------------------------------------------------
+    # Rounded columns for easier reading
+    # -----------------------------------------------------
+    expected_cases_by_block_count_round =
+      round(expected_cases_by_block_count, 2),
+    
+    expected_cases_by_population_round =
+      round(expected_cases_by_population, 2),
+    
+    excess_cases_by_block_count_round =
+      round(excess_cases_by_block_count, 2),
+    
+    excess_cases_by_population_round =
+      round(excess_cases_by_population, 2),
+    
+    observed_expected_ratio_by_block_count_round =
+      round(observed_expected_ratio_by_block_count, 2),
+    
+    observed_expected_ratio_by_population_round =
+      round(observed_expected_ratio_by_population, 2),
+    
+    # -----------------------------------------------------
+    # Interpretation flags
+    # -----------------------------------------------------
+    overrepresented_by_block_count = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_block_count) &
+        observed_expected_ratio_by_block_count >= overrepresented_ratio_threshold,
+      TRUE,
+      FALSE
+    ),
+    
+    overrepresented_by_population = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_population) &
+        observed_expected_ratio_by_population >= overrepresented_ratio_threshold,
+      TRUE,
+      FALSE
+    ),
+    
+    underrepresented_by_block_count = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_block_count) &
+        observed_expected_ratio_by_block_count <= underrepresented_ratio_threshold,
+      TRUE,
+      FALSE
+    ),
+    
+    underrepresented_by_population = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_population) &
+        observed_expected_ratio_by_population <= underrepresented_ratio_threshold,
+      TRUE,
+      FALSE
+    ),
+    
+    strongly_overrepresented = if_else(
+      overrepresented_by_block_count == TRUE &
+        overrepresented_by_population == TRUE,
+      TRUE,
+      FALSE
+    ),
+    
+    strongly_underrepresented = if_else(
+      underrepresented_by_block_count == TRUE &
+        underrepresented_by_population == TRUE,
+      TRUE,
+      FALSE
+    )
+  ) %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    
+    observed_case_count,
+    total_cases_in_category,
+    observed_case_share_within_category,
+    observed_case_share_within_category_label,
+    
+    screen_group_block_count,
+    total_eqi_block_count,
+    screen_group_block_share,
+    screen_group_block_share_label,
+    expected_cases_by_block_count,
+    expected_cases_by_block_count_round,
+    excess_cases_by_block_count,
+    excess_cases_by_block_count_round,
+    observed_expected_ratio_by_block_count,
+    observed_expected_ratio_by_block_count_round,
+    
+    screen_group_population,
+    total_eqi_population,
+    screen_group_population_share,
+    screen_group_population_share_label,
+    expected_cases_by_population,
+    expected_cases_by_population_round,
+    excess_cases_by_population,
+    excess_cases_by_population_round,
+    observed_expected_ratio_by_population,
+    observed_expected_ratio_by_population_round,
+    
+    overrepresented_by_block_count,
+    overrepresented_by_population,
+    underrepresented_by_block_count,
+    underrepresented_by_population,
+    strongly_overrepresented,
+    strongly_underrepresented
+  ) %>%
+  arrange(
+    desc(strongly_overrepresented),
+    desc(observed_expected_ratio_by_population),
+    desc(observed_expected_ratio_by_block_count),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 12. Overrepresented-only table
+# =========================================================
+
+category_screen_overrepresented_only <- category_screen_observed_expected %>%
+  filter(
+    observed_case_count >= min_case_count
+  ) %>%
+  filter(
+    observed_expected_ratio_by_population >= overrepresented_ratio_threshold |
+      observed_expected_ratio_by_block_count >= overrepresented_ratio_threshold
+  ) %>%
+  arrange(
+    desc(strongly_overrepresented),
+    desc(observed_expected_ratio_by_population),
+    desc(observed_expected_ratio_by_block_count),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 13. One top SCREEN group per category
+#
+# Uses population-based observed-to-expected ratio as the main ranking.
+# If population baseline is missing, it falls back to block-count ratio.
+# =========================================================
+
+category_top_screen_summary <- category_screen_observed_expected %>%
+  filter(
+    observed_case_count >= min_case_count
+  ) %>%
+  mutate(
+    ranking_ratio = coalesce(
+      observed_expected_ratio_by_population,
+      observed_expected_ratio_by_block_count
+    )
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  slice_max(
+    order_by = ranking_ratio,
+    n = 1,
+    with_ties = FALSE
+  ) %>%
+  ungroup() %>%
+  arrange(
+    desc(strongly_overrepresented),
+    desc(ranking_ratio),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 14. Export outputs
+# =========================================================
+
+cat("\nExporting outputs...\n")
+
+safe_write_csv(
+  screen_baseline,
+  output_baseline_csv
+)
+
+safe_write_csv(
+  category_screen_observed_expected,
+  output_full_csv
+)
+
+safe_write_csv(
+  category_screen_overrepresented_only,
+  output_overrepresented_csv
+)
+
+safe_write_csv(
+  category_top_screen_summary,
+  output_summary_csv
+)
+
+cat("\nDone: disproportionate spatial distribution analysis.\n")
+
+cat("\nOutputs saved to:\n")
+cat(output_baseline_csv, "\n")
+cat(output_full_csv, "\n")
+cat(output_overrepresented_csv, "\n")
+cat(output_summary_csv, "\n")
+
+cat("\nOutput row counts:\n")
+cat("01_screen_baseline:", nrow(screen_baseline), "\n")
+cat("02_category_screen_observed_expected:", nrow(category_screen_observed_expected), "\n")
+cat("03_category_screen_overrepresented_only:", nrow(category_screen_overrepresented_only), "\n")
+cat("04_category_top_screen_summary:", nrow(category_top_screen_summary), "\n")
