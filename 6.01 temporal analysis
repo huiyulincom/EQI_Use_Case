@@ -11,10 +11,10 @@ library(forcats)
 # 1. User inputs
 # =========================================================
 gdb_path_points <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
-layer_points    <- "CSR_02_23_2026_Projected"      # contains Customer_Service_Requested
+layer_points    <- "CSR_02_23_2026_Projected"      # contains Customer_Service_Requested and Date Opened
 
 gdb_path_eqi <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
-layer_eqi    <- "EQI_Shapefile_ExportFeatures"     # contains SCREEN
+layer_eqi    <- "EQI_Shapefile_ExportFeatures"     # contains SCREEN and POP20
 
 output_folder <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR"
 
@@ -34,14 +34,19 @@ output_time_month_csv <- file.path(
   "csr_time_pattern_by_month.csv"
 )
 
+output_time_quarter_csv <- file.path(
+  output_folder,
+  "csr_time_pattern_by_quarter.csv"
+)
+
+output_time_week_csv <- file.path(
+  output_folder,
+  "csr_time_pattern_by_week.csv"
+)
+
 output_time_dow_csv <- file.path(
   output_folder,
   "csr_time_pattern_by_day_of_week.csv"
-)
-
-output_time_hour_csv <- file.path(
-  output_folder,
-  "csr_time_pattern_by_hour.csv"
 )
 
 output_time_category_summary_csv <- file.path(
@@ -58,9 +63,8 @@ field_request <- "Customer_Service_Requested"
 field_screen  <- "SCREEN"
 field_pop     <- "POP20"
 
-# IMPORTANT:
-# Change this to the actual time field in your CSR point layer.
-field_time <- "Created_Date"
+# Your date-only field
+field_time <- "Date Opened"
 
 # Optional: if EQI polygon layer already has a stable unique ID field, use it here
 eqi_id_field <- NULL
@@ -130,6 +134,7 @@ if (st_crs(points_sf) != st_crs(eqi_sf)) {
 # 5. Create unique EQI polygon ID
 # =========================================================
 if (!is.null(eqi_id_field)) {
+  
   if (!(eqi_id_field %in% names(eqi_sf))) {
     stop(
       paste0(
@@ -142,6 +147,7 @@ if (!is.null(eqi_id_field)) {
     mutate(eqi_poly_id = as.character(.data[[eqi_id_field]]))
   
 } else {
+  
   eqi_sf <- eqi_sf %>%
     mutate(eqi_poly_id = as.character(row_number()))
 }
@@ -165,26 +171,35 @@ points_clean <- points_sf %>%
     
     request_time_raw = .data[[field_time]],
     
-    # This should work for most ArcGIS datetime fields.
-    # If your time field is stored as character in a special format,
-    # this may need to be adjusted.
-    request_datetime = suppressWarnings(
-      as.POSIXct(request_time_raw, tz = "America/Los_Angeles")
+    # Date-only field.
+    # This works if Date Opened is already stored as Date or standard date text.
+    request_date = suppressWarnings(as.Date(request_time_raw)),
+    
+    # Backup parsing for common character date formats.
+    request_date = if_else(
+      is.na(request_date),
+      suppressWarnings(as.Date(mdy(as.character(request_time_raw)))),
+      request_date
     ),
     
-    request_date = as.Date(request_datetime),
-    request_year = year(request_datetime),
-    request_month = floor_date(request_datetime, unit = "month"),
+    request_date = if_else(
+      is.na(request_date),
+      suppressWarnings(as.Date(ymd(as.character(request_time_raw)))),
+      request_date
+    ),
+    
+    request_year = year(request_date),
+    request_month = floor_date(request_date, unit = "month"),
     request_month_label = format(request_month, "%Y-%m"),
-    request_quarter = paste0(request_year, "-Q", quarter(request_datetime)),
-    request_week = floor_date(request_datetime, unit = "week", week_start = 1),
+    request_quarter = paste0(request_year, "-Q", quarter(request_date)),
+    request_week = floor_date(request_date, unit = "week", week_start = 1),
+    request_week_label = format(request_week, "%Y-%m-%d"),
     request_day_of_week = wday(
-      request_datetime,
+      request_date,
       label = TRUE,
       abbr = FALSE,
       week_start = 1
     ),
-    request_hour = hour(request_datetime),
     is_weekend = if_else(
       as.character(request_day_of_week) %in% c("Saturday", "Sunday"),
       TRUE,
@@ -390,7 +405,32 @@ summary_by_category_quarter <- joined_sf %>%
 
 
 # =========================================================
-# 14. Time pattern: category x day of week
+# 14. Time pattern: category x week
+# =========================================================
+
+summary_by_category_week <- joined_sf %>%
+  st_drop_geometry() %>%
+  filter(!is.na(request_week)) %>%
+  count(
+    Customer_Service_Requested,
+    request_week,
+    request_week_label,
+    name = "case_count"
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    total_cases_in_category = sum(case_count),
+    percent_of_category = case_count / total_cases_in_category,
+    average_weekly_cases = mean(case_count),
+    week_index = case_count / average_weekly_cases,
+    percent_label = paste0(round(percent_of_category * 100, 2), "%")
+  ) %>%
+  ungroup() %>%
+  arrange(Customer_Service_Requested, request_week)
+
+
+# =========================================================
+# 15. Time pattern: category x day of week
 # =========================================================
 
 summary_by_category_dow <- joined_sf %>%
@@ -411,30 +451,6 @@ summary_by_category_dow <- joined_sf %>%
   ) %>%
   ungroup() %>%
   arrange(Customer_Service_Requested, request_day_of_week)
-
-
-# =========================================================
-# 15. Time pattern: category x hour
-# =========================================================
-
-summary_by_category_hour <- joined_sf %>%
-  st_drop_geometry() %>%
-  filter(!is.na(request_hour)) %>%
-  count(
-    Customer_Service_Requested,
-    request_hour,
-    name = "case_count"
-  ) %>%
-  group_by(Customer_Service_Requested) %>%
-  mutate(
-    total_cases_in_category = sum(case_count),
-    percent_of_category = case_count / total_cases_in_category,
-    average_hourly_cases = mean(case_count),
-    hour_index = case_count / average_hourly_cases,
-    percent_label = paste0(round(percent_of_category * 100, 2), "%")
-  ) %>%
-  ungroup() %>%
-  arrange(Customer_Service_Requested, request_hour)
 
 
 # =========================================================
@@ -463,6 +479,17 @@ category_peak_quarter <- summary_by_category_quarter %>%
     peak_quarter_index = quarter_index
   )
 
+category_peak_week <- summary_by_category_week %>%
+  group_by(Customer_Service_Requested) %>%
+  slice_max(order_by = case_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(
+    Customer_Service_Requested,
+    peak_week = request_week_label,
+    peak_week_cases = case_count,
+    peak_week_index = week_index
+  )
+
 category_peak_dow <- summary_by_category_dow %>%
   group_by(Customer_Service_Requested) %>%
   slice_max(order_by = case_count, n = 1, with_ties = FALSE) %>%
@@ -472,17 +499,6 @@ category_peak_dow <- summary_by_category_dow %>%
     peak_day_of_week = request_day_of_week,
     peak_dow_cases = case_count,
     peak_dow_index = day_of_week_index
-  )
-
-category_peak_hour <- summary_by_category_hour %>%
-  group_by(Customer_Service_Requested) %>%
-  slice_max(order_by = case_count, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  select(
-    Customer_Service_Requested,
-    peak_hour = request_hour,
-    peak_hour_cases = case_count,
-    peak_hour_index = hour_index
   )
 
 category_weekend_summary <- joined_sf %>%
@@ -501,8 +517,8 @@ category_weekend_summary <- joined_sf %>%
 summary_category_time_pattern <- category_weekend_summary %>%
   left_join(category_peak_month, by = "Customer_Service_Requested") %>%
   left_join(category_peak_quarter, by = "Customer_Service_Requested") %>%
+  left_join(category_peak_week, by = "Customer_Service_Requested") %>%
   left_join(category_peak_dow, by = "Customer_Service_Requested") %>%
-  left_join(category_peak_hour, by = "Customer_Service_Requested") %>%
   arrange(desc(total_cases))
 
 
@@ -541,8 +557,9 @@ write_csv(summary_overall, output_overall_csv)
 write_csv(summary_by_screen, output_csv)
 
 write_csv(summary_by_category_month, output_time_month_csv)
+write_csv(summary_by_category_quarter, output_time_quarter_csv)
+write_csv(summary_by_category_week, output_time_week_csv)
 write_csv(summary_by_category_dow, output_time_dow_csv)
-write_csv(summary_by_category_hour, output_time_hour_csv)
 write_csv(summary_category_time_pattern, output_time_category_summary_csv)
 write_csv(summary_by_category_screen_month, output_time_screen_month_csv)
 
@@ -552,7 +569,8 @@ cat("Overall category summary saved to:\n", output_overall_csv, "\n")
 
 cat("\nTime pattern outputs saved to:\n")
 cat(output_time_month_csv, "\n")
+cat(output_time_quarter_csv, "\n")
+cat(output_time_week_csv, "\n")
 cat(output_time_dow_csv, "\n")
-cat(output_time_hour_csv, "\n")
 cat(output_time_category_summary_csv, "\n")
 cat(output_time_screen_month_csv, "\n")
