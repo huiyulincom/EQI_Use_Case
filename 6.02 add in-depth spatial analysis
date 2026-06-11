@@ -309,28 +309,45 @@ category_screen_disproportionate_summary <- category_screen_disproportionate %>%
 
 
 # =========================================================
-# 5. Optional:
-#    Create a filtered table of only clearly overrepresented
-#    category x SCREEN combinations.
+# 5. Clean results and create overrepresented-only table
 # =========================================================
+
+cat("\nStep 5 started: cleaning result tables...\n")
+
+# Make sure output folder exists
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+output_disproportionate_csv <- file.path(
+  output_folder,
+  "csr_category_screen_disproportionate_distribution.csv"
+)
+
+output_disproportionate_summary_csv <- file.path(
+  output_folder,
+  "csr_category_screen_disproportionate_distribution_summary.csv"
+)
 
 output_overrepresented_only_csv <- file.path(
   output_folder,
   "csr_category_screen_overrepresented_only.csv"
 )
 
-# Clean ratio columns first to avoid Inf values causing issues
+# Clean Inf / NaN values
 category_screen_disproportionate_clean <- category_screen_disproportionate %>%
   mutate(
-    observed_expected_ratio_by_population = if_else(
-      is.infinite(observed_expected_ratio_by_population),
-      NA_real_,
-      observed_expected_ratio_by_population
-    ),
-    observed_expected_ratio_by_block_count = if_else(
-      is.infinite(observed_expected_ratio_by_block_count),
-      NA_real_,
-      observed_expected_ratio_by_block_count
+    across(
+      where(is.numeric),
+      ~ if_else(is.infinite(.x) | is.nan(.x), NA_real_, .x)
+    )
+  )
+
+category_screen_disproportionate_summary_clean <- category_screen_disproportionate_summary %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ if_else(is.infinite(.x) | is.nan(.x), NA_real_, .x)
     )
   )
 
@@ -349,32 +366,47 @@ category_screen_overrepresented_only <- category_screen_disproportionate_clean %
     desc(observed_case_count)
   )
 
+cat("Step 5 finished.\n")
+cat("Rows in full table:", nrow(category_screen_disproportionate_clean), "\n")
+cat("Rows in summary table:", nrow(category_screen_disproportionate_summary_clean), "\n")
+cat("Rows in overrepresented-only table:", nrow(category_screen_overrepresented_only), "\n")
+
 
 # =========================================================
-# 6. Export
+# 6. Export CSV - safer version
 # =========================================================
 
-write_csv(
+cat("\nStep 6 started: exporting CSV files...\n")
+
+cat("\nWriting full table...\n")
+utils::write.csv(
   category_screen_disproportionate_clean,
-  output_disproportionate_csv
+  output_disproportionate_csv,
+  row.names = FALSE,
+  na = ""
 )
+cat("Finished full table:\n", output_disproportionate_csv, "\n")
 
-write_csv(
-  category_screen_disproportionate_summary,
-  output_disproportionate_summary_csv
+cat("\nWriting summary table...\n")
+utils::write.csv(
+  category_screen_disproportionate_summary_clean,
+  output_disproportionate_summary_csv,
+  row.names = FALSE,
+  na = ""
 )
+cat("Finished summary table:\n", output_disproportionate_summary_csv, "\n")
 
-write_csv(
+cat("\nWriting overrepresented-only table...\n")
+utils::write.csv(
   category_screen_overrepresented_only,
-  output_overrepresented_only_csv
+  output_overrepresented_only_csv,
+  row.names = FALSE,
+  na = ""
 )
+cat("Finished overrepresented-only table:\n", output_overrepresented_only_csv, "\n")
 
 cat("\nDone: disproportionate spatial distribution analysis.\n")
-
 cat("\nOutputs saved to:\n")
 cat(output_disproportionate_csv, "\n")
 cat(output_disproportionate_summary_csv, "\n")
 cat(output_overrepresented_only_csv, "\n")
-
-cat("\nNumber of overrepresented category x SCREEN combinations:\n")
-cat(nrow(category_screen_overrepresented_only), "\n")
