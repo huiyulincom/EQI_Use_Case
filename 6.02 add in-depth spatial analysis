@@ -1,0 +1,360 @@
+# =========================================================
+# Disproportionate Spatial Distribution Analysis
+# Category x SCREEN
+#
+# Purpose:
+# Identify whether each CSR category is overrepresented or
+# underrepresented in SCREEN / non-screen groups after accounting
+# for baseline block count and population distribution.
+#
+# Key concept:
+# observed_expected_ratio = observed cases / expected cases
+#
+# Ratio > 1:
+#   observed cases are higher than expected
+#
+# Ratio = 1:
+#   observed cases are close to expected
+#
+# Ratio < 1:
+#   observed cases are lower than expected
+# =========================================================
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(sf)
+
+# =========================================================
+# User settings
+# =========================================================
+
+output_disproportionate_csv <- file.path(
+  output_folder,
+  "csr_category_screen_disproportionate_distribution.csv"
+)
+
+output_disproportionate_summary_csv <- file.path(
+  output_folder,
+  "csr_category_screen_disproportionate_distribution_summary.csv"
+)
+
+# Minimum case threshold to avoid over-interpreting very small cells
+min_case_count <- 10
+
+
+# =========================================================
+# 1. Prepare EQI baseline by SCREEN group
+#
+# This baseline tells us:
+# - how many EQI blocks are in each SCREEN group
+# - how much population is in each SCREEN group
+#
+# These baseline shares are used to calculate expected cases.
+# =========================================================
+
+eqi_screen_baseline <- eqi_clean %>%
+  filter(
+    !is.na(SCREEN),
+    SCREEN != "Outside polygon / No match"
+  ) %>%
+  group_by(SCREEN) %>%
+  summarise(
+    screen_group_block_count = n_distinct(eqi_poly_id),
+    screen_group_population = sum(POP20, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    total_eqi_block_count = sum(screen_group_block_count),
+    total_eqi_population = sum(screen_group_population, na.rm = TRUE),
+    
+    screen_group_block_share =
+      screen_group_block_count / total_eqi_block_count,
+    
+    screen_group_population_share =
+      screen_group_population / total_eqi_population,
+    
+    screen_group_block_share_label =
+      paste0(round(screen_group_block_share * 100, 2), "%"),
+    
+    screen_group_population_share_label =
+      paste0(round(screen_group_population_share * 100, 2), "%")
+  )
+
+
+# =========================================================
+# 2. Observed cases by category x SCREEN
+#
+# This gives observed case counts and case shares
+# within each CSR category.
+# =========================================================
+
+observed_category_screen <- joined_sf %>%
+  st_drop_geometry() %>%
+  filter(
+    !is.na(Customer_Service_Requested),
+    !is.na(SCREEN),
+    SCREEN != "Outside polygon / No match"
+  ) %>%
+  count(
+    Customer_Service_Requested,
+    SCREEN,
+    name = "observed_case_count"
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    total_cases_in_category = sum(observed_case_count),
+    
+    observed_case_share_within_category =
+      observed_case_count / total_cases_in_category,
+    
+    observed_case_share_within_category_label =
+      paste0(round(observed_case_share_within_category * 100, 2), "%")
+  ) %>%
+  ungroup()
+
+
+# =========================================================
+# 3. Join observed cases with baseline shares
+#
+# Calculate expected cases in two ways:
+#
+# A. Expected by block count:
+#    If this category followed the distribution of EQI block counts,
+#    how many cases would be expected in each SCREEN group?
+#
+# B. Expected by population:
+#    If this category followed the population distribution,
+#    how many cases would be expected in each SCREEN group?
+# =========================================================
+
+category_screen_disproportionate <- observed_category_screen %>%
+  left_join(
+    eqi_screen_baseline,
+    by = "SCREEN"
+  ) %>%
+  mutate(
+    # -----------------------------------------------------
+    # Expected cases by block count baseline
+    # -----------------------------------------------------
+    expected_cases_by_block_count =
+      total_cases_in_category * screen_group_block_share,
+    
+    observed_expected_ratio_by_block_count =
+      observed_case_count / expected_cases_by_block_count,
+    
+    excess_cases_by_block_count =
+      observed_case_count - expected_cases_by_block_count,
+    
+    # This is the same ratio, calculated from shares.
+    # Kept here only for checking.
+    observed_expected_ratio_by_block_share =
+      observed_case_share_within_category / screen_group_block_share,
+    
+    # -----------------------------------------------------
+    # Expected cases by population baseline
+    # -----------------------------------------------------
+    expected_cases_by_population =
+      total_cases_in_category * screen_group_population_share,
+    
+    observed_expected_ratio_by_population =
+      observed_case_count / expected_cases_by_population,
+    
+    excess_cases_by_population =
+      observed_case_count - expected_cases_by_population,
+    
+    # This is the same ratio, calculated from shares.
+    # Kept here only for checking.
+    observed_expected_ratio_by_population_share =
+      observed_case_share_within_category / screen_group_population_share,
+    
+    # -----------------------------------------------------
+    # Labels
+    # -----------------------------------------------------
+    expected_cases_by_block_count_label =
+      round(expected_cases_by_block_count, 2),
+    
+    expected_cases_by_population_label =
+      round(expected_cases_by_population, 2),
+    
+    excess_cases_by_block_count_label =
+      round(excess_cases_by_block_count, 2),
+    
+    excess_cases_by_population_label =
+      round(excess_cases_by_population, 2),
+    
+    observed_expected_ratio_by_block_count_label =
+      round(observed_expected_ratio_by_block_count, 2),
+    
+    observed_expected_ratio_by_population_label =
+      round(observed_expected_ratio_by_population, 2),
+    
+    # -----------------------------------------------------
+    # Interpretation flags
+    # -----------------------------------------------------
+    overrepresented_by_block_count = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_block_count) &
+        observed_expected_ratio_by_block_count >= 1.5,
+      TRUE,
+      FALSE
+    ),
+    
+    overrepresented_by_population = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_population) &
+        observed_expected_ratio_by_population >= 1.5,
+      TRUE,
+      FALSE
+    ),
+    
+    underrepresented_by_block_count = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_block_count) &
+        observed_expected_ratio_by_block_count <= 0.67,
+      TRUE,
+      FALSE
+    ),
+    
+    underrepresented_by_population = if_else(
+      observed_case_count >= min_case_count &
+        !is.na(observed_expected_ratio_by_population) &
+        observed_expected_ratio_by_population <= 0.67,
+      TRUE,
+      FALSE
+    ),
+    
+    strongly_overrepresented = if_else(
+      overrepresented_by_block_count == TRUE &
+        overrepresented_by_population == TRUE,
+      TRUE,
+      FALSE
+    ),
+    
+    strongly_underrepresented = if_else(
+      underrepresented_by_block_count == TRUE &
+        underrepresented_by_population == TRUE,
+      TRUE,
+      FALSE
+    )
+  ) %>%
+  arrange(
+    desc(strongly_overrepresented),
+    desc(observed_expected_ratio_by_population),
+    desc(observed_expected_ratio_by_block_count),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 4. Summary:
+#    strongest overrepresented SCREEN group for each category
+#
+# This table gives one row per category.
+# It selects the SCREEN group with the highest
+# observed_expected_ratio_by_population.
+# =========================================================
+
+category_screen_disproportionate_summary <- category_screen_disproportionate %>%
+  filter(observed_case_count >= min_case_count) %>%
+  group_by(Customer_Service_Requested) %>%
+  slice_max(
+    order_by = observed_expected_ratio_by_population,
+    n = 1,
+    with_ties = FALSE
+  ) %>%
+  ungroup() %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    
+    observed_case_count,
+    total_cases_in_category,
+    observed_case_share_within_category,
+    observed_case_share_within_category_label,
+    
+    screen_group_block_count,
+    screen_group_block_share,
+    screen_group_block_share_label,
+    expected_cases_by_block_count,
+    expected_cases_by_block_count_label,
+    excess_cases_by_block_count,
+    excess_cases_by_block_count_label,
+    observed_expected_ratio_by_block_count,
+    observed_expected_ratio_by_block_count_label,
+    
+    screen_group_population,
+    screen_group_population_share,
+    screen_group_population_share_label,
+    expected_cases_by_population,
+    expected_cases_by_population_label,
+    excess_cases_by_population,
+    excess_cases_by_population_label,
+    observed_expected_ratio_by_population,
+    observed_expected_ratio_by_population_label,
+    
+    overrepresented_by_block_count,
+    overrepresented_by_population,
+    underrepresented_by_block_count,
+    underrepresented_by_population,
+    strongly_overrepresented,
+    strongly_underrepresented
+  ) %>%
+  arrange(
+    desc(strongly_overrepresented),
+    desc(observed_expected_ratio_by_population),
+    desc(observed_expected_ratio_by_block_count),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 5. Optional:
+#    Create a filtered table of only clearly overrepresented
+#    category x SCREEN combinations.
+# =========================================================
+
+category_screen_overrepresented_only <- category_screen_disproportionate %>%
+  filter(
+    observed_case_count >= min_case_count,
+    observed_expected_ratio_by_population >= 1.5 |
+      observed_expected_ratio_by_block_count >= 1.5
+  ) %>%
+  arrange(
+    desc(strongly_overrepresented),
+    desc(observed_expected_ratio_by_population),
+    desc(observed_expected_ratio_by_block_count)
+  )
+
+
+output_overrepresented_only_csv <- file.path(
+  output_folder,
+  "csr_category_screen_overrepresented_only.csv"
+)
+
+write_csv(
+  category_screen_overrepresented_only,
+  output_overrepresented_only_csv
+)
+
+
+# =========================================================
+# 6. Export
+# =========================================================
+
+write_csv(
+  category_screen_disproportionate,
+  output_disproportionate_csv
+)
+
+write_csv(
+  category_screen_disproportionate_summary,
+  output_disproportionate_summary_csv
+)
+
+cat("\nDone: disproportionate spatial distribution analysis.\n")
+
+cat("\nOutputs saved to:\n")
+cat(output_disproportionate_csv, "\n")
+cat(output_disproportionate_summary_csv, "\n")
+cat(output_overrepresented_only_csv, "\n")
