@@ -1,0 +1,317 @@
+# =========================================================
+# Time-Spatial Pattern Analysis:
+# Category x SCREEN x Month
+# Focus:
+# Do some CSR categories show different monthly patterns
+# across different SCREEN groups?
+# =========================================================
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(lubridate)
+library(stringr)
+
+# =========================================================
+# User settings
+# =========================================================
+
+output_folder <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR"
+
+output_category_screen_month_csv <- file.path(
+  output_folder,
+  "csr_category_screen_month_pattern.csv"
+)
+
+output_category_screen_peak_month_csv <- file.path(
+  output_folder,
+  "csr_category_screen_peak_month_summary.csv"
+)
+
+output_category_screen_contrast_csv <- file.path(
+  output_folder,
+  "csr_category_screen_month_contrast.csv"
+)
+
+output_category_screen_chisq_csv <- file.path(
+  output_folder,
+  "csr_category_screen_temporal_chisq_test.csv"
+)
+
+# Minimum case thresholds.
+# These help avoid over-interpreting tiny categories or tiny SCREEN groups.
+min_category_screen_cases <- 10
+min_category_total_cases <- 30
+
+
+# =========================================================
+# 1. Prepare non-spatial data
+# =========================================================
+
+joined_df <- joined_sf %>%
+  st_drop_geometry() %>%
+  filter(
+    !is.na(Customer_Service_Requested),
+    !is.na(SCREEN),
+    !is.na(request_month),
+    SCREEN != "Outside polygon / No match"
+  ) %>%
+  mutate(
+    request_month_label = format(request_month, "%Y-%m")
+  )
+
+
+# =========================================================
+# 2. Category x SCREEN x month counts
+# =========================================================
+
+category_screen_month <- joined_df %>%
+  count(
+    Customer_Service_Requested,
+    SCREEN,
+    request_month,
+    request_month_label,
+    name = "case_count"
+  )
+
+
+# =========================================================
+# 3. Add category-screen totals and within-group monthly index
+#    This answers:
+#    Within a specific category and SCREEN group,
+#    which months are unusually high?
+# =========================================================
+
+category_screen_month_pattern <- category_screen_month %>%
+  group_by(Customer_Service_Requested, SCREEN) %>%
+  mutate(
+    total_cases_in_category_screen = sum(case_count),
+    average_monthly_cases_in_category_screen = mean(case_count),
+    category_screen_month_index = case_count / average_monthly_cases_in_category_screen,
+    percent_within_category_screen = case_count / total_cases_in_category_screen
+  ) %>%
+  ungroup()
+
+
+# =========================================================
+# 4. Add category-wide monthly pattern
+#    This gives the overall monthly distribution for each category,
+#    ignoring SCREEN.
+# =========================================================
+
+category_month_overall <- joined_df %>%
+  count(
+    Customer_Service_Requested,
+    request_month,
+    request_month_label,
+    name = "category_month_total_cases"
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    category_total_cases = sum(category_month_total_cases),
+    percent_within_category_overall =
+      category_month_total_cases / category_total_cases
+  ) %>%
+  ungroup()
+
+
+# =========================================================
+# 5. Compare SCREEN-specific monthly pattern against
+#    category-wide monthly pattern
+#
+#    screen_month_lift tells whether a SCREEN group has
+#    a higher-than-expected share in a month compared with
+#    the category overall.
+#
+#    Example:
+#    screen_month_lift = 2 means:
+#    For this category, this SCREEN group has twice the
+#    monthly share compared with the category overall.
+# =========================================================
+
+category_screen_month_contrast <- category_screen_month_pattern %>%
+  left_join(
+    category_month_overall,
+    by = c(
+      "Customer_Service_Requested",
+      "request_month",
+      "request_month_label"
+    )
+  ) %>%
+  mutate(
+    screen_month_lift =
+      percent_within_category_screen / percent_within_category_overall,
+    
+    difference_from_category_overall =
+      percent_within_category_screen - percent_within_category_overall,
+    
+    percent_within_category_screen_label =
+      paste0(round(percent_within_category_screen * 100, 2), "%"),
+    
+    percent_within_category_overall_label =
+      paste0(round(percent_within_category_overall * 100, 2), "%"),
+    
+    difference_from_category_overall_label =
+      paste0(round(difference_from_category_overall * 100, 2), "%")
+  ) %>%
+  filter(
+    total_cases_in_category_screen >= min_category_screen_cases,
+    category_total_cases >= min_category_total_cases
+  ) %>%
+  arrange(
+    Customer_Service_Requested,
+    SCREEN,
+    request_month
+  )
+
+
+# =========================================================
+# 6. Peak month summary for each category x SCREEN
+#
+#    This gives one row per category x SCREEN group.
+#    It identifies the strongest month for that specific
+#    category-screen combination.
+# =========================================================
+
+category_screen_peak_month_summary <- category_screen_month_contrast %>%
+  group_by(Customer_Service_Requested, SCREEN) %>%
+  slice_max(
+    order_by = screen_month_lift,
+    n = 1,
+    with_ties = FALSE
+  ) %>%
+  ungroup() %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    total_cases_in_category_screen,
+    category_total_cases,
+    peak_month = request_month_label,
+    peak_month_case_count = case_count,
+    percent_within_category_screen,
+    percent_within_category_screen_label,
+    percent_within_category_overall,
+    percent_within_category_overall_label,
+    difference_from_category_overall,
+    difference_from_category_overall_label,
+    screen_month_lift,
+    category_screen_month_index
+  ) %>%
+  arrange(
+    desc(screen_month_lift),
+    desc(total_cases_in_category_screen)
+  )
+
+
+# =========================================================
+# 7. Chi-square test:
+#    For each CSR category, test whether monthly distribution
+#    differs by SCREEN group.
+#
+#    This answers:
+#    For this category, is the time pattern statistically
+#    different across SCREEN groups?
+# =========================================================
+
+run_chisq_for_category <- function(df) {
+  
+  tab <- df %>%
+    count(SCREEN, request_month_label, name = "n") %>%
+    pivot_wider(
+      names_from = request_month_label,
+      values_from = n,
+      values_fill = 0
+    )
+  
+  screen_names <- tab$SCREEN
+  
+  mat <- tab %>%
+    select(-SCREEN) %>%
+    as.matrix()
+  
+  rownames(mat) <- screen_names
+  
+  # Need at least 2 SCREEN groups and 2 months
+  if (nrow(mat) < 2 || ncol(mat) < 2) {
+    return(
+      tibble(
+        chisq_statistic = NA_real_,
+        p_value = NA_real_,
+        test_note = "Not enough SCREEN groups or months"
+      )
+    )
+  }
+  
+  # Remove empty rows and columns
+  mat <- mat[rowSums(mat) > 0, colSums(mat) > 0, drop = FALSE]
+  
+  if (nrow(mat) < 2 || ncol(mat) < 2) {
+    return(
+      tibble(
+        chisq_statistic = NA_real_,
+        p_value = NA_real_,
+        test_note = "Not enough non-empty SCREEN groups or months"
+      )
+    )
+  }
+  
+  test <- suppressWarnings(chisq.test(mat))
+  
+  tibble(
+    chisq_statistic = as.numeric(test$statistic),
+    p_value = as.numeric(test$p.value),
+    test_note = if_else(
+      any(test$expected < 5),
+      "Some expected counts below 5; interpret with caution",
+      "OK"
+    )
+  )
+}
+
+
+category_screen_temporal_chisq <- joined_df %>%
+  group_by(Customer_Service_Requested) %>%
+  filter(n() >= min_category_total_cases) %>%
+  group_modify(~ run_chisq_for_category(.x)) %>%
+  ungroup() %>%
+  mutate(
+    statistically_significant_005 = if_else(
+      !is.na(p_value) & p_value < 0.05,
+      TRUE,
+      FALSE
+    )
+  ) %>%
+  arrange(p_value)
+
+
+# =========================================================
+# 8. Export outputs
+# =========================================================
+
+write_csv(
+  category_screen_month_pattern,
+  output_category_screen_month_csv
+)
+
+write_csv(
+  category_screen_month_contrast,
+  output_category_screen_contrast_csv
+)
+
+write_csv(
+  category_screen_peak_month_summary,
+  output_category_screen_peak_month_csv
+)
+
+write_csv(
+  category_screen_temporal_chisq,
+  output_category_screen_chisq_csv
+)
+
+cat("\nDone: Category x SCREEN x month temporal pattern analysis.\n")
+
+cat("\nOutputs saved to:\n")
+cat(output_category_screen_month_csv, "\n")
+cat(output_category_screen_contrast_csv, "\n")
+cat(output_category_screen_peak_month_csv, "\n")
+cat(output_category_screen_chisq_csv, "\n")
