@@ -1,0 +1,446 @@
+可以。最后 `06_category_screen_combined_prioritization_summary.csv` 里的分类结果，核心有三组：
+
+1. **overrepresentation 分类**
+2. **delay / slow 分类**
+3. **最终 priority_review_group 综合分类**
+
+---
+
+## 1. `population_representation_level`
+
+这个是判断：
+
+> 这个 category 在这个 SCREEN 里，是不是相对于人口 baseline overrepresented？
+
+用的是：
+
+```r
+observed_expected_ratio_by_all_csr_population
+```
+
+也就是：
+
+```r
+observed cases / expected cases
+```
+
+分类是：
+
+| 分类                    |                 条件 | 意思               |
+| --------------------- | -----------------: | ---------------- |
+| `Low case count`      | observed case < 10 | 样本太少，谨慎解释        |
+| `Below expected`      |       ratio < 0.67 | 低于人口 baseline 预期 |
+| `Close to expected`   |          0.67–1.25 | 接近预期             |
+| `Moderately elevated` |           1.25–1.5 | 略高于预期            |
+| `Elevated`            |            1.5–2.0 | 明显高于预期           |
+| `Strongly elevated`   |             >= 2.0 | 很明显高于预期          |
+
+所以如果你看到：
+
+```r
+population_representation_level = "Elevated"
+```
+
+意思是：
+
+> 这个 category × SCREEN 的 cases 是按 all CSR matched-block population baseline 预期的 1.5–2 倍。
+
+---
+
+## 2. `response_median_delay_level`
+
+这个是判断：
+
+> 这个 category × SCREEN 的典型 response time，是否比这个 category 自己的整体 response time 慢？
+
+用的是：
+
+```r
+response_median_ratio_vs_category
+```
+
+也就是：
+
+```r
+category × SCREEN median response days
+/
+category-wide median response days
+```
+
+分类是：
+
+| 分类                             |                        条件 | 意思                           |
+| ------------------------------ | ------------------------: | ---------------------------- |
+| `Low valid time count`         | valid response cases < 10 | 有效日期太少，谨慎解释                  |
+| `No valid category baseline`   |    category 没有有效 baseline | 不能比较                         |
+| `Faster than category typical` |               ratio < 0.8 | 比这个 category 的典型 response 更快 |
+| `Similar to category typical`  |                  0.8–1.25 | 跟这个 category 的正常水平差不多        |
+| `Moderately slower`            |                  1.25–1.5 | 比本 category 典型值略慢            |
+| `Slower`                       |                   1.5–2.0 | 明显更慢                         |
+| `Much slower`                  |                    >= 2.0 | 慢很多                          |
+
+比如：
+
+```r
+response_median_ratio_vs_category_round = 1.6
+response_median_delay_level = "Slower"
+```
+
+意思是：
+
+> 这个 category × SCREEN 的 median response time 是该 category 整体 median response time 的 1.6 倍，说明典型 response 明显更慢。
+
+---
+
+## 3. `resolution_median_delay_level`
+
+这个逻辑和 response 一样，只是换成解决时间：
+
+```r
+resolution_median_ratio_vs_category
+=
+category × SCREEN median resolution days
+/
+category-wide median resolution days
+```
+
+它回答：
+
+> 这个 SCREEN 里的这个 category，典型解决时间是否比这个 category 自己整体更慢？
+
+比如：
+
+```r
+resolution_median_delay_level = "Much slower"
+```
+
+意思是：
+
+> 这个 category × SCREEN 的 median resolution time 至少是该 category 整体 median resolution time 的 2 倍。
+
+---
+
+## 4. mean delay level 是辅助，不是主判断
+
+表里还有：
+
+```r
+response_mean_delay_level
+resolution_mean_delay_level
+```
+
+它们用的是 mean ratio：
+
+```r
+category × SCREEN mean / category-wide mean
+```
+
+mean 的作用是看 **long-tail / backlog**。
+
+如果 median 不高，但是 mean 很高，说明：
+
+> 大多数 case 不慢，但有少数 case 拖特别久，把平均值拉高了。
+
+所以正式判断 typical delay 时，优先看：
+
+```r
+response_median_delay_level
+resolution_median_delay_level
+```
+
+辅助看：
+
+```r
+response_mean_delay_level
+resolution_mean_delay_level
+```
+
+---
+
+## 5. `response_long_tail_delay_flag`
+
+这个判断的是：
+
+> response 是否有 long-tail backlog 问题？
+
+条件大概是：
+
+```r
+response_mean_ratio_vs_category >= 1.5
+AND
+response_median_ratio_vs_category < 1.25
+```
+
+意思是：
+
+> 平均 response time 比 category 整体高很多，但中位数没有高，说明不是大多数 case 都慢，而是少数 case 拖得特别久。
+
+如果它是：
+
+```r
+response_long_tail_delay_flag = TRUE
+```
+
+你可以解释为：
+
+> This may indicate a long-tail response backlog rather than a consistent delay across typical cases.
+
+中文就是：
+
+> 这更像是少数积压 case 拉高平均值，而不是整体 response 都慢。
+
+---
+
+## 6. `resolution_long_tail_delay_flag`
+
+同理，只是用于 resolution：
+
+```r
+resolution_mean_ratio_vs_category >= 1.5
+AND
+resolution_median_ratio_vs_category < 1.25
+```
+
+如果是 TRUE，说明：
+
+> 解决时间可能有 long-tail backlog。
+
+---
+
+## 7. `delay_interpretation`
+
+这个是把 response / resolution 的 delay pattern 写成一句话。
+
+常见几种：
+
+### `Typical response and resolution times are slower than this category's overall pattern.`
+
+意思是：
+
+> response 和 resolution 的中位数都明显高于这个 category 自己的整体水平。
+
+这是比较强的 delay pattern。
+
+---
+
+### `Typical response time is slower than this category's overall pattern.`
+
+意思是：
+
+> response 慢，但 resolution 不一定慢。
+
+可能说明：
+
+> 前期响应慢，但一旦响应后，关闭速度未必异常。
+
+---
+
+### `Typical resolution time is slower than this category's overall pattern.`
+
+意思是：
+
+> response 不一定慢，但 resolution 慢。
+
+这可能表示：
+
+> 接案不慢，但处理/关闭拖得久。
+
+---
+
+### `Mean response time is elevated but median is not; possible long-tail response backlog.`
+
+意思是：
+
+> 典型 case 不慢，但少数 response 特别慢的 case 拉高了平均值。
+
+---
+
+### `Mean resolution time is elevated but median is not; possible long-tail resolution backlog.`
+
+意思是：
+
+> 典型 case 不慢，但少数 resolution 特别久的 case 拉高了平均值。
+
+---
+
+### `Time performance is similar to category pattern or insufficient data.`
+
+意思是：
+
+> 跟本 category 正常水平差不多，或者有效日期太少，不能判断。
+
+---
+
+## 8. 最重要：`priority_review_group`
+
+这是最终综合分类，把 overrepresentation 和 delay 放在一起。
+
+### A. `High priority: elevated representation + typical delay`
+
+这是最值得关注的组合。
+
+条件大概是：
+
+```r
+population_representation_level = Elevated 或 Strongly elevated
+AND
+response_median_ratio_vs_category >= 1.5
+或
+resolution_median_ratio_vs_category >= 1.5
+```
+
+意思是：
+
+> 这个 category 在这个 SCREEN 里明显 overrepresented，而且典型 response 或 resolution 也明显更慢。
+
+这是最适合作为 prioritization 证据的结果。
+
+你可以汇报成：
+
+> This category-SCREEN combination is both disproportionately represented and associated with slower typical response or resolution time.
+
+---
+
+### B. `Priority review: elevated representation + moderate typical delay`
+
+这是第二优先级。
+
+条件大概是：
+
+```r
+population_representation_level 至少 Moderately elevated
+AND
+response_median_ratio_vs_category >= 1.25
+或
+resolution_median_ratio_vs_category >= 1.25
+```
+
+意思是：
+
+> 这个 category 在这个 SCREEN 里偏高，同时 response/resolution 也比本 category 正常水平略慢。
+
+这个可以作为 review list。
+
+---
+
+### C. `Backlog review: elevated representation + long-tail delay`
+
+这个不是“典型 case 都慢”，而是：
+
+> overrepresented，同时 mean 高、median 不高。
+
+意思是：
+
+> 该 category × SCREEN 本身值得关注，而且可能有少数特别拖延的 cases。
+
+适合后续查个案：
+
+```r
+which cases are extremely delayed?
+```
+
+---
+
+### D. `Elevated representation`
+
+意思是：
+
+> 这个 category × SCREEN overrepresented，但 response/resolution 没有明显慢。
+
+这类也有 equity prioritization 意义，因为它说明需求/问题更集中；但不能说服务更慢。
+
+---
+
+### E. `Moderately elevated representation`
+
+意思是：
+
+> 有一定 overrepresentation，但没有明显 delay。
+
+这类适合作为 monitoring，不一定是强 priority。
+
+---
+
+### F. `Time delay review`
+
+意思是：
+
+> 没有明显 overrepresentation，但 response/resolution 比本 category 正常水平慢。
+
+这不是 EQI overrepresentation 问题，但可能是 operations / service performance 问题。
+
+---
+
+### G. `Backlog review`
+
+意思是：
+
+> 没有明显 overrepresentation，但有 long-tail backlog。
+
+适合查极端拖延个案。
+
+---
+
+### H. `General monitoring`
+
+意思是：
+
+> 既没有明显 overrepresentation，也没有明显 time delay。
+
+---
+
+## 最后怎么用这个分类
+
+我建议你正式汇报时把它分成三层：
+
+### 第一层：Priority for EQI-informed response
+
+重点看：
+
+```r
+High priority: elevated representation + typical delay
+Priority review: elevated representation + moderate typical delay
+Backlog review: elevated representation + long-tail delay
+```
+
+这些最能支持：
+
+> EQI SCREEN can help prioritize CSR response.
+
+---
+
+### 第二层：Equity exposure / demand pattern
+
+看：
+
+```r
+Elevated representation
+Moderately elevated representation
+```
+
+这些说明：
+
+> 某些 CSR category 在某些 EQI SCREEN areas 更集中。
+
+但不一定说明 response 慢。
+
+---
+
+### 第三层：Operational delay pattern
+
+看：
+
+```r
+Time delay review
+Backlog review
+```
+
+这些说明：
+
+> 服务时间有问题，但不是明显 EQI overrepresentation 问题。
+
+---
+
+最关键的一句话是：
+
+> `population_representation_level` 说明“需求/问题是否 disproportionate”；`response_median_delay_level` 和 `resolution_median_delay_level` 说明“典型服务时间是否比该 category 自己更慢”；`priority_review_group` 把这两类信息合起来，用来找最值得优先 review 的 category × SCREEN 组合。
