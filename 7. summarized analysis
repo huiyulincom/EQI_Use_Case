@@ -60,6 +60,11 @@ output_category_overview_csv <- file.path(
   "05_category_overview_summary.csv"
 )
 
+output_combined_summary_csv <- file.path(
+  output_folder,
+  "06_category_screen_combined_prioritization_summary.csv"
+)
+
 # Thresholds
 min_case_count <- 10
 
