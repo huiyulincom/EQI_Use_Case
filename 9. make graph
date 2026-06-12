@@ -591,16 +591,40 @@ plot_df <- plot_df %>%
 
 # =========================================================
 # 8. Figure 1: Overrepresentation heatmap
-#    Improved color contrast
+#    Discrete color by representation level
 # =========================================================
 
 plot_df_overrep <- plot_df %>%
   mutate(
-    overrep_ratio_for_color =
-      cap_value(observed_expected_ratio_by_all_csr_population_round, upper_cap = 3),
+    overrep_level_for_plot = case_when(
+      population_representation_level == "Below expected" ~ "Below expected",
+      population_representation_level == "Close to expected" ~ "Close to expected",
+      population_representation_level == "Moderately elevated" ~ "Moderately elevated",
+      population_representation_level == "Elevated" ~ "Elevated",
+      population_representation_level == "Strongly elevated" ~ "Strongly elevated",
+      population_representation_level == "Low case count" ~ "Low case count",
+      TRUE ~ "Other / missing"
+    ),
+    
+    overrep_level_for_plot = factor(
+      overrep_level_for_plot,
+      levels = c(
+        "Below expected",
+        "Close to expected",
+        "Moderately elevated",
+        "Elevated",
+        "Strongly elevated",
+        "Low case count",
+        "Other / missing"
+      )
+    ),
     
     overrep_ratio_label =
-      make_ratio_label(observed_expected_ratio_by_all_csr_population_round)
+      if_else(
+        is.na(observed_expected_ratio_by_all_csr_population_round),
+        "",
+        as.character(round(observed_expected_ratio_by_all_csr_population_round, 1))
+      )
   )
 
 p1 <- ggplot(
@@ -608,34 +632,32 @@ p1 <- ggplot(
   aes(
     x = SCREEN,
     y = Customer_Service_Requested,
-    fill = overrep_ratio_for_color
+    fill = overrep_level_for_plot
   )
 ) +
-  geom_tile(color = "white", linewidth = 0.25) +
+  geom_tile(color = "white", linewidth = 0.35) +
   geom_text(
     aes(label = overrep_ratio_label),
     size = 2.5
   ) +
-  scale_fill_gradientn(
-    colors = c(
-      "#2C7BB6",
-      "#D9D9D9",
-      "#FFFFBF",
-      "#FDAE61",
-      "#D7191C"
+  scale_fill_manual(
+    values = c(
+      "Below expected" = "#2C7BB6",
+      "Close to expected" = "#D9D9D9",
+      "Moderately elevated" = "#FFFFBF",
+      "Elevated" = "#FDAE61",
+      "Strongly elevated" = "#D7191C",
+      "Low case count" = "#F0F0F0",
+      "Other / missing" = "white"
     ),
-    values = scales::rescale(c(0, 1.0, 1.25, 1.5, 3.0)),
-    limits = c(0, 3),
-    breaks = c(0.5, 1.0, 1.25, 1.5, 2.0, 3.0),
-    labels = c("0.5", "1.0", "1.25", "1.5", "2.0", "3.0+"),
-    na.value = "white"
+    drop = FALSE
   ) +
   labs(
     title = "Observed-to-Expected Ratio by CSR Category and EQI SCREEN",
-    subtitle = "Population baseline: all CSR-matched EQI blocks. Color capped at 3.0 for readability.",
+    subtitle = "Color shows overrepresentation level; text shows observed-to-expected ratio.",
     x = "EQI SCREEN",
     y = "CSR Category",
-    fill = "Observed / Expected"
+    fill = "Representation Level"
   ) +
   theme_minimal() +
   theme(
@@ -654,16 +676,42 @@ ggsave(
 
 # =========================================================
 # 9. Figure 2: Response delay heatmap
-#    Improved color contrast
+#    Discrete color by response median delay level
 # =========================================================
 
 plot_df_response <- plot_df %>%
   mutate(
-    response_ratio_for_color =
-      cap_value(response_median_ratio_vs_category_round, upper_cap = 3),
+    response_level_for_plot = case_when(
+      response_median_delay_level == "Faster than category typical" ~ "Faster than category typical",
+      response_median_delay_level == "Similar to category typical" ~ "Similar to category typical",
+      response_median_delay_level == "Moderately slower" ~ "Moderately slower",
+      response_median_delay_level == "Slower" ~ "Slower",
+      response_median_delay_level == "Much slower" ~ "Much slower",
+      response_median_delay_level == "Low valid time count" ~ "Low valid time count",
+      response_median_delay_level == "No valid category baseline" ~ "No valid category baseline",
+      TRUE ~ "Other / missing"
+    ),
+    
+    response_level_for_plot = factor(
+      response_level_for_plot,
+      levels = c(
+        "Faster than category typical",
+        "Similar to category typical",
+        "Moderately slower",
+        "Slower",
+        "Much slower",
+        "Low valid time count",
+        "No valid category baseline",
+        "Other / missing"
+      )
+    ),
     
     response_ratio_label =
-      make_ratio_label(response_median_ratio_vs_category_round)
+      if_else(
+        is.na(response_median_ratio_vs_category_round),
+        "",
+        as.character(round(response_median_ratio_vs_category_round, 1))
+      )
   )
 
 p2 <- ggplot(
@@ -671,34 +719,33 @@ p2 <- ggplot(
   aes(
     x = SCREEN,
     y = Customer_Service_Requested,
-    fill = response_ratio_for_color
+    fill = response_level_for_plot
   )
 ) +
-  geom_tile(color = "white", linewidth = 0.25) +
+  geom_tile(color = "white", linewidth = 0.35) +
   geom_text(
     aes(label = response_ratio_label),
     size = 2.5
   ) +
-  scale_fill_gradientn(
-    colors = c(
-      "#2C7BB6",
-      "#D9D9D9",
-      "#FFFFBF",
-      "#FDAE61",
-      "#D7191C"
+  scale_fill_manual(
+    values = c(
+      "Faster than category typical" = "#2C7BB6",
+      "Similar to category typical" = "#D9D9D9",
+      "Moderately slower" = "#FFFFBF",
+      "Slower" = "#FDAE61",
+      "Much slower" = "#D7191C",
+      "Low valid time count" = "#F0F0F0",
+      "No valid category baseline" = "#BDBDBD",
+      "Other / missing" = "white"
     ),
-    values = scales::rescale(c(0, 1.0, 1.25, 1.5, 3.0)),
-    limits = c(0, 3),
-    breaks = c(0.5, 1.0, 1.25, 1.5, 2.0, 3.0),
-    labels = c("0.5", "1.0", "1.25", "1.5", "2.0", "3.0+"),
-    na.value = "white"
+    drop = FALSE
   ) +
   labs(
     title = "Response Time Ratio by CSR Category and EQI SCREEN",
-    subtitle = "Median response time in SCREEN group divided by category-wide median response time. Color capped at 3.0.",
+    subtitle = "Color shows response delay level; text shows median response ratio vs category.",
     x = "EQI SCREEN",
     y = "CSR Category",
-    fill = "Response Ratio"
+    fill = "Response Delay Level"
   ) +
   theme_minimal() +
   theme(
@@ -717,16 +764,42 @@ ggsave(
 
 # =========================================================
 # 10. Figure 3: Resolution delay heatmap
-#     Improved color contrast
+#     Discrete color by resolution median delay level
 # =========================================================
 
 plot_df_resolution <- plot_df %>%
   mutate(
-    resolution_ratio_for_color =
-      cap_value(resolution_median_ratio_vs_category_round, upper_cap = 3),
+    resolution_level_for_plot = case_when(
+      resolution_median_delay_level == "Faster than category typical" ~ "Faster than category typical",
+      resolution_median_delay_level == "Similar to category typical" ~ "Similar to category typical",
+      resolution_median_delay_level == "Moderately slower" ~ "Moderately slower",
+      resolution_median_delay_level == "Slower" ~ "Slower",
+      resolution_median_delay_level == "Much slower" ~ "Much slower",
+      resolution_median_delay_level == "Low valid time count" ~ "Low valid time count",
+      resolution_median_delay_level == "No valid category baseline" ~ "No valid category baseline",
+      TRUE ~ "Other / missing"
+    ),
+    
+    resolution_level_for_plot = factor(
+      resolution_level_for_plot,
+      levels = c(
+        "Faster than category typical",
+        "Similar to category typical",
+        "Moderately slower",
+        "Slower",
+        "Much slower",
+        "Low valid time count",
+        "No valid category baseline",
+        "Other / missing"
+      )
+    ),
     
     resolution_ratio_label =
-      make_ratio_label(resolution_median_ratio_vs_category_round)
+      if_else(
+        is.na(resolution_median_ratio_vs_category_round),
+        "",
+        as.character(round(resolution_median_ratio_vs_category_round, 1))
+      )
   )
 
 p3 <- ggplot(
@@ -734,34 +807,33 @@ p3 <- ggplot(
   aes(
     x = SCREEN,
     y = Customer_Service_Requested,
-    fill = resolution_ratio_for_color
+    fill = resolution_level_for_plot
   )
 ) +
-  geom_tile(color = "white", linewidth = 0.25) +
+  geom_tile(color = "white", linewidth = 0.35) +
   geom_text(
     aes(label = resolution_ratio_label),
     size = 2.5
   ) +
-  scale_fill_gradientn(
-    colors = c(
-      "#2C7BB6",
-      "#D9D9D9",
-      "#FFFFBF",
-      "#FDAE61",
-      "#D7191C"
+  scale_fill_manual(
+    values = c(
+      "Faster than category typical" = "#2C7BB6",
+      "Similar to category typical" = "#D9D9D9",
+      "Moderately slower" = "#FFFFBF",
+      "Slower" = "#FDAE61",
+      "Much slower" = "#D7191C",
+      "Low valid time count" = "#F0F0F0",
+      "No valid category baseline" = "#BDBDBD",
+      "Other / missing" = "white"
     ),
-    values = scales::rescale(c(0, 1.0, 1.25, 1.5, 3.0)),
-    limits = c(0, 3),
-    breaks = c(0.5, 1.0, 1.25, 1.5, 2.0, 3.0),
-    labels = c("0.5", "1.0", "1.25", "1.5", "2.0", "3.0+"),
-    na.value = "white"
+    drop = FALSE
   ) +
   labs(
     title = "Resolution Time Ratio by CSR Category and EQI SCREEN",
-    subtitle = "Median resolution time in SCREEN group divided by category-wide median resolution time. Color capped at 3.0.",
+    subtitle = "Color shows resolution delay level; text shows median resolution ratio vs category.",
     x = "EQI SCREEN",
     y = "CSR Category",
-    fill = "Resolution Ratio"
+    fill = "Resolution Delay Level"
   ) +
   theme_minimal() +
   theme(
@@ -776,7 +848,6 @@ ggsave(
   height = 10,
   dpi = 300
 )
-
 
 # =========================================================
 # 11. Figure 4: Priority bubble plot
