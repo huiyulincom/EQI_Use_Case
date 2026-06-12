@@ -1289,7 +1289,10 @@ safe_write_csv(
   category_overview_summary,
   output_category_overview_csv
 )
-
+safe_write_csv(
+  category_screen_combined_prioritization_summary,
+  output_combined_summary_csv
+)
 cat("\nDone: CSR EQI prioritization analysis.\n")
 
 cat("\nOutputs saved to:\n")
