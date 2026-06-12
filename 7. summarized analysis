@@ -756,6 +756,375 @@ category_screen_ur20_time_summary <- matched_df %>%
     UR20
   )
 
+# =========================================================
+# 16. Combined category x SCREEN prioritization summary
+#
+# One row = Customer_Service_Requested x SCREEN
+#
+# This combines:
+# - observed cases
+# - expected cases
+# - observed-to-expected population ratio
+# - representation level
+# - response time
+# - resolution time
+# - urban/rural breakdown
+# =========================================================
+
+# ---------------------------------------------------------
+# 16A. Time summary by category x SCREEN
+# ---------------------------------------------------------
+
+category_screen_time_summary <- matched_df %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN
+  ) %>%
+  summarise(
+    case_count_for_time_summary = n(),
+    
+    response_time_valid_n =
+      sum(!is.na(response_days)),
+    
+    response_days_mean =
+      mean(response_days, na.rm = TRUE),
+    
+    response_days_median =
+      median(response_days, na.rm = TRUE),
+    
+    response_days_p75 =
+      quantile(response_days, 0.75, na.rm = TRUE, names = FALSE),
+    
+    response_days_p90 =
+      quantile(response_days, 0.90, na.rm = TRUE, names = FALSE),
+    
+    response_days_missing_n =
+      sum(is.na(response_days)),
+    
+    resolution_time_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    resolution_days_mean =
+      mean(resolution_days, na.rm = TRUE),
+    
+    resolution_days_median =
+      median(resolution_days, na.rm = TRUE),
+    
+    resolution_days_p75 =
+      quantile(resolution_days, 0.75, na.rm = TRUE, names = FALSE),
+    
+    resolution_days_p90 =
+      quantile(resolution_days, 0.90, na.rm = TRUE, names = FALSE),
+    
+    resolution_days_missing_n =
+      sum(is.na(resolution_days)),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    across(
+      c(
+        response_days_mean,
+        response_days_median,
+        response_days_p75,
+        response_days_p90,
+        resolution_days_mean,
+        resolution_days_median,
+        resolution_days_p75,
+        resolution_days_p90
+      ),
+      ~ if_else(is.nan(.x), NA_real_, .x)
+    ),
+    
+    response_days_mean_round = round(response_days_mean, 2),
+    response_days_median_round = round(response_days_median, 2),
+    response_days_p75_round = round(response_days_p75, 2),
+    response_days_p90_round = round(response_days_p90, 2),
+    
+    resolution_days_mean_round = round(resolution_days_mean, 2),
+    resolution_days_median_round = round(resolution_days_median, 2),
+    resolution_days_p75_round = round(resolution_days_p75, 2),
+    resolution_days_p90_round = round(resolution_days_p90, 2)
+  )
+
+
+# ---------------------------------------------------------
+# 16B. Urban / rural case counts by category x SCREEN
+# ---------------------------------------------------------
+
+category_screen_ur20_counts <- matched_df %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN
+  ) %>%
+  summarise(
+    urban_case_count =
+      sum(UR20 == "Urban", na.rm = TRUE),
+    
+    rural_case_count =
+      sum(UR20 == "Rural", na.rm = TRUE),
+    
+    unknown_ur20_case_count =
+      sum(UR20 == "Unknown", na.rm = TRUE),
+    
+    total_ur20_case_count = n(),
+    
+    urban_case_share =
+      if_else(
+        total_ur20_case_count > 0,
+        urban_case_count / total_ur20_case_count,
+        NA_real_
+      ),
+    
+    rural_case_share =
+      if_else(
+        total_ur20_case_count > 0,
+        rural_case_count / total_ur20_case_count,
+        NA_real_
+      ),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    urban_case_share_label =
+      paste0(round(urban_case_share * 100, 2), "%"),
+    
+    rural_case_share_label =
+      paste0(round(rural_case_share * 100, 2), "%")
+  )
+
+
+# ---------------------------------------------------------
+# 16C. Urban / rural response and resolution time
+#     This creates separate urban/rural mean and median columns.
+# ---------------------------------------------------------
+
+category_screen_ur20_time_wide <- matched_df %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN,
+    UR20
+  ) %>%
+  summarise(
+    ur20_case_count = n(),
+    
+    response_valid_n = sum(!is.na(response_days)),
+    response_mean = mean(response_days, na.rm = TRUE),
+    response_median = median(response_days, na.rm = TRUE),
+    
+    resolution_valid_n = sum(!is.na(resolution_days)),
+    resolution_mean = mean(resolution_days, na.rm = TRUE),
+    resolution_median = median(resolution_days, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    response_mean = if_else(is.nan(response_mean), NA_real_, response_mean),
+    response_median = if_else(is.nan(response_median), NA_real_, response_median),
+    resolution_mean = if_else(is.nan(resolution_mean), NA_real_, resolution_mean),
+    resolution_median = if_else(is.nan(resolution_median), NA_real_, resolution_median),
+    
+    UR20 = str_to_lower(UR20)
+  ) %>%
+  pivot_wider(
+    names_from = UR20,
+    values_from = c(
+      ur20_case_count,
+      response_valid_n,
+      response_mean,
+      response_median,
+      resolution_valid_n,
+      resolution_mean,
+      resolution_median
+    ),
+    names_glue = "{UR20}_{.value}"
+  ) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ if_else(is.nan(.x), NA_real_, .x)
+    ),
+    
+    urban_response_mean_round = round(urban_response_mean, 2),
+    urban_response_median_round = round(urban_response_median, 2),
+    urban_resolution_mean_round = round(urban_resolution_mean, 2),
+    urban_resolution_median_round = round(urban_resolution_median, 2),
+    
+    rural_response_mean_round = round(rural_response_mean, 2),
+    rural_response_median_round = round(rural_response_median, 2),
+    rural_resolution_mean_round = round(rural_resolution_mean, 2),
+    rural_resolution_median_round = round(rural_resolution_median, 2)
+  )
+
+
+# ---------------------------------------------------------
+# 16D. Combine overrepresentation and time summaries
+# ---------------------------------------------------------
+
+category_screen_combined_prioritization_summary <- category_screen_observed_expected_population %>%
+  left_join(
+    category_screen_time_summary,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  left_join(
+    category_screen_ur20_counts,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  left_join(
+    category_screen_ur20_time_wide,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  mutate(
+    response_resolution_note = case_when(
+      response_time_valid_n == 0 & resolution_time_valid_n == 0 ~
+        "No valid response or resolution dates",
+      
+      response_time_valid_n == 0 ~
+        "No valid response dates",
+      
+      resolution_time_valid_n == 0 ~
+        "No valid resolution dates",
+      
+      TRUE ~
+        "Valid time summary"
+    ),
+    
+    priority_review_group = case_when(
+      population_representation_level %in% c("Elevated", "Strongly elevated") &
+        !is.na(response_days_mean) &
+        response_days_mean >= median(response_days_mean, na.rm = TRUE) ~
+        "Elevated representation + slower response",
+      
+      population_representation_level %in% c("Elevated", "Strongly elevated") &
+        !is.na(resolution_days_mean) &
+        resolution_days_mean >= median(resolution_days_mean, na.rm = TRUE) ~
+        "Elevated representation + slower resolution",
+      
+      population_representation_level == "Moderately elevated" ~
+        "Moderately elevated representation",
+      
+      population_representation_level %in% c("Elevated", "Strongly elevated") ~
+        "Elevated representation",
+      
+      TRUE ~
+        "General monitoring"
+    )
+  ) %>%
+  select(
+    # -----------------------------------------------------
+    # Main identifiers
+    # -----------------------------------------------------
+    Customer_Service_Requested,
+    SCREEN,
+    
+    # -----------------------------------------------------
+    # Case count and overrepresentation
+    # -----------------------------------------------------
+    observed_case_count,
+    total_cases_in_category,
+    observed_case_share_within_category,
+    observed_case_share_within_category_label,
+    
+    all_csr_screen_population,
+    all_csr_total_population,
+    all_csr_screen_population_share,
+    all_csr_screen_population_share_label,
+    
+    expected_cases_by_all_csr_population,
+    expected_cases_by_all_csr_population_round,
+    excess_cases_by_all_csr_population,
+    excess_cases_by_all_csr_population_round,
+    observed_expected_ratio_by_all_csr_population,
+    observed_expected_ratio_by_all_csr_population_round,
+    
+    population_representation_level,
+    prioritization_flag,
+    interpretation,
+    
+    # -----------------------------------------------------
+    # Overall response and resolution time
+    # -----------------------------------------------------
+    response_time_valid_n,
+    response_days_mean,
+    response_days_mean_round,
+    response_days_median,
+    response_days_median_round,
+    response_days_p75,
+    response_days_p75_round,
+    response_days_p90,
+    response_days_p90_round,
+    response_days_missing_n,
+    
+    resolution_time_valid_n,
+    resolution_days_mean,
+    resolution_days_mean_round,
+    resolution_days_median,
+    resolution_days_median_round,
+    resolution_days_p75,
+    resolution_days_p75_round,
+    resolution_days_p90,
+    resolution_days_p90_round,
+    resolution_days_missing_n,
+    
+    response_resolution_note,
+    
+    # -----------------------------------------------------
+    # Urban / rural count
+    # -----------------------------------------------------
+    urban_case_count,
+    rural_case_count,
+    unknown_ur20_case_count,
+    total_ur20_case_count,
+    urban_case_share,
+    urban_case_share_label,
+    rural_case_share,
+    rural_case_share_label,
+    
+    # -----------------------------------------------------
+    # Urban response/resolution time
+    # -----------------------------------------------------
+    urban_ur20_case_count,
+    urban_response_valid_n,
+    urban_response_mean,
+    urban_response_mean_round,
+    urban_response_median,
+    urban_response_median_round,
+    urban_resolution_valid_n,
+    urban_resolution_mean,
+    urban_resolution_mean_round,
+    urban_resolution_median,
+    urban_resolution_median_round,
+    
+    # -----------------------------------------------------
+    # Rural response/resolution time
+    # -----------------------------------------------------
+    rural_ur20_case_count,
+    rural_response_valid_n,
+    rural_response_mean,
+    rural_response_mean_round,
+    rural_response_median,
+    rural_response_median_round,
+    rural_resolution_valid_n,
+    rural_resolution_mean,
+    rural_resolution_mean_round,
+    rural_resolution_median,
+    rural_resolution_median_round,
+    
+    # -----------------------------------------------------
+    # Final review group
+    # -----------------------------------------------------
+    priority_review_group
+  ) %>%
+  arrange(
+    desc(population_representation_level == "Strongly elevated"),
+    desc(population_representation_level == "Elevated"),
+    desc(population_representation_level == "Moderately elevated"),
+    desc(observed_expected_ratio_by_all_csr_population),
+    desc(response_days_mean),
+    desc(resolution_days_mean),
+    Customer_Service_Requested,
+    SCREEN
+  )
 
 # =========================================================
 # 16. Category overview summary
