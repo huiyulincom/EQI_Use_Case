@@ -1,0 +1,938 @@
+library(sf)
+library(dplyr)
+library(stringr)
+library(readr)
+library(tidyr)
+library(lubridate)
+
+# =========================================================
+# 1. User inputs
+# =========================================================
+
+gdb_path_points <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
+layer_points    <- "CSR_02_23_2026_Projected"
+
+gdb_path_eqi <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
+layer_eqi    <- "EQI_Shapefile_ExportFeatures"
+
+field_request   <- "Customer_Service_Requested"
+field_screen    <- "SCREEN"
+field_pop       <- "POP20"
+field_ur20      <- "UR20"
+
+field_opened    <- "Date_Opened"
+field_responded <- "Date_Responded"
+field_closed    <- "Date_Closed"
+
+# Optional: if EQI polygon layer already has a stable unique ID field, use it here
+eqi_id_field <- NULL
+# eqi_id_field <- "OBJECTID"
+
+# Output folder
+output_folder <- "C:/Users/s160418/Desktop/CSR_EQI_Prioritization_Output"
+
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+output_baseline_csv <- file.path(
+  output_folder,
+  "01_all_csr_population_baseline_by_screen.csv"
+)
+
+output_observed_expected_csv <- file.path(
+  output_folder,
+  "02_category_screen_observed_expected_population.csv"
+)
+
+output_overrepresented_csv <- file.path(
+  output_folder,
+  "03_category_screen_overrepresented_only.csv"
+)
+
+output_time_summary_csv <- file.path(
+  output_folder,
+  "04_category_screen_ur20_time_summary.csv"
+)
+
+output_category_overview_csv <- file.path(
+  output_folder,
+  "05_category_overview_summary.csv"
+)
+
+# Thresholds
+min_case_count <- 10
+
+below_expected_threshold <- 0.67
+moderately_elevated_threshold <- 1.25
+elevated_threshold <- 1.50
+strongly_elevated_threshold <- 2.00
+
+
+# =========================================================
+# 2. Safe CSV writer
+# =========================================================
+
+safe_write_csv <- function(df, path) {
+  
+  cat("\nPreparing to write:\n", path, "\n")
+  cat("Rows:", nrow(df), " Columns:", ncol(df), "\n")
+  
+  df <- as.data.frame(df)
+  
+  if ("geometry" %in% names(df)) {
+    df$geometry <- NULL
+  }
+  
+  list_cols <- names(df)[sapply(df, is.list)]
+  if (length(list_cols) > 0) {
+    for (col in list_cols) {
+      df[[col]] <- as.character(df[[col]])
+    }
+  }
+  
+  numeric_cols <- names(df)[sapply(df, is.numeric)]
+  if (length(numeric_cols) > 0) {
+    for (col in numeric_cols) {
+      df[[col]][is.infinite(df[[col]]) | is.nan(df[[col]])] <- NA_real_
+    }
+  }
+  
+  if (file.exists(path)) {
+    file.remove(path)
+  }
+  
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    data.table::fwrite(
+      df,
+      file = path,
+      na = ""
+    )
+  } else {
+    utils::write.csv(
+      df,
+      file = path,
+      row.names = FALSE,
+      na = ""
+    )
+  }
+  
+  cat("Finished writing:\n", path, "\n")
+}
+
+
+# =========================================================
+# 3. Helper functions
+# =========================================================
+
+parse_csr_date <- function(x) {
+  
+  # If already Date
+  if (inherits(x, "Date")) {
+    return(x)
+  }
+  
+  # If POSIXct / POSIXlt
+  if (inherits(x, "POSIXct") | inherits(x, "POSIXlt")) {
+    return(as.Date(x))
+  }
+  
+  x_chr <- as.character(x)
+  x_chr <- str_squish(x_chr)
+  x_chr[x_chr == ""] <- NA_character_
+  
+  parsed <- suppressWarnings(as.Date(x_chr))
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(mdy(x_chr))),
+    parsed
+  )
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(ymd(x_chr))),
+    parsed
+  )
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(mdy_hms(x_chr))),
+    parsed
+  )
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(ymd_hms(x_chr))),
+    parsed
+  )
+  
+  parsed
+}
+
+get_ratio_level <- function(ratio, case_count) {
+  case_when(
+    is.na(ratio) ~ "No denominator",
+    case_count < min_case_count ~ "Low case count",
+    ratio < below_expected_threshold ~ "Below expected",
+    ratio >= below_expected_threshold & ratio < moderately_elevated_threshold ~ "Close to expected",
+    ratio >= moderately_elevated_threshold & ratio < elevated_threshold ~ "Moderately elevated",
+    ratio >= elevated_threshold & ratio < strongly_elevated_threshold ~ "Elevated",
+    ratio >= strongly_elevated_threshold ~ "Strongly elevated",
+    TRUE ~ "Unclassified"
+  )
+}
+
+
+# =========================================================
+# 4. Read data
+# =========================================================
+
+cat("\nReading CSR point layer...\n")
+points_sf <- st_read(gdb_path_points, layer = layer_points, quiet = FALSE)
+
+cat("\nReading EQI polygon layer...\n")
+eqi_sf <- st_read(gdb_path_eqi, layer = layer_eqi, quiet = FALSE)
+
+
+# =========================================================
+# 5. Check required fields
+# =========================================================
+
+required_point_fields <- c(
+  field_request,
+  field_opened,
+  field_responded,
+  field_closed
+)
+
+missing_point_fields <- setdiff(required_point_fields, names(points_sf))
+
+if (length(missing_point_fields) > 0) {
+  stop(
+    paste0(
+      "These required fields were not found in point layer:\n",
+      paste(missing_point_fields, collapse = ", "),
+      "\n\nAvailable point fields:\n",
+      paste(names(points_sf), collapse = ", ")
+    )
+  )
+}
+
+required_eqi_fields <- c(
+  field_screen,
+  field_pop,
+  field_ur20
+)
+
+missing_eqi_fields <- setdiff(required_eqi_fields, names(eqi_sf))
+
+if (length(missing_eqi_fields) > 0) {
+  stop(
+    paste0(
+      "These required fields were not found in EQI layer:\n",
+      paste(missing_eqi_fields, collapse = ", "),
+      "\n\nAvailable EQI fields:\n",
+      paste(names(eqi_sf), collapse = ", ")
+    )
+  )
+}
+
+
+# =========================================================
+# 6. Match CRS
+# =========================================================
+
+if (st_crs(points_sf) != st_crs(eqi_sf)) {
+  eqi_sf <- st_transform(eqi_sf, st_crs(points_sf))
+}
+
+
+# =========================================================
+# 7. Create unique EQI polygon ID
+# =========================================================
+
+if (!is.null(eqi_id_field)) {
+  
+  if (!(eqi_id_field %in% names(eqi_sf))) {
+    stop(
+      paste0(
+        "eqi_id_field '", eqi_id_field, "' was not found in EQI layer."
+      )
+    )
+  }
+  
+  eqi_sf <- eqi_sf %>%
+    mutate(eqi_poly_id = as.character(.data[[eqi_id_field]]))
+  
+} else {
+  
+  eqi_sf <- eqi_sf %>%
+    mutate(eqi_poly_id = as.character(row_number()))
+}
+
+
+# =========================================================
+# 8. Clean attributes
+# =========================================================
+
+points_clean <- points_sf %>%
+  select(
+    all_of(c(
+      field_request,
+      field_opened,
+      field_responded,
+      field_closed
+    ))
+  ) %>%
+  mutate(
+    Customer_Service_Requested = as.character(.data[[field_request]]),
+    Customer_Service_Requested = str_squish(Customer_Service_Requested),
+    Customer_Service_Requested = na_if(Customer_Service_Requested, ""),
+    Customer_Service_Requested = if_else(
+      is.na(Customer_Service_Requested),
+      "NA / Blank",
+      Customer_Service_Requested
+    ),
+    
+    Date_Opened_raw = .data[[field_opened]],
+    Date_Responded_raw = .data[[field_responded]],
+    Date_Closed_raw = .data[[field_closed]],
+    
+    Date_Opened_clean = parse_csr_date(Date_Opened_raw),
+    Date_Responded_clean = parse_csr_date(Date_Responded_raw),
+    Date_Closed_clean = parse_csr_date(Date_Closed_raw),
+    
+    response_days = as.numeric(Date_Responded_clean - Date_Opened_clean),
+    resolution_days = as.numeric(Date_Closed_clean - Date_Opened_clean),
+    
+    response_days = if_else(
+      !is.na(response_days) & response_days >= 0,
+      response_days,
+      NA_real_
+    ),
+    
+    resolution_days = if_else(
+      !is.na(resolution_days) & resolution_days >= 0,
+      resolution_days,
+      NA_real_
+    )
+  )
+
+eqi_clean <- eqi_sf %>%
+  select(
+    eqi_poly_id,
+    all_of(c(field_screen, field_pop, field_ur20))
+  ) %>%
+  mutate(
+    SCREEN = as.character(.data[[field_screen]]),
+    SCREEN = str_squish(SCREEN),
+    SCREEN = na_if(SCREEN, ""),
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "NA / Blank",
+      SCREEN
+    ),
+    
+    POP20 = suppressWarnings(as.numeric(.data[[field_pop]])),
+    POP20 = if_else(is.na(POP20), 0, POP20),
+    
+    UR20 = as.character(.data[[field_ur20]]),
+    UR20 = str_squish(UR20),
+    UR20 = str_to_upper(UR20),
+    UR20 = na_if(UR20, ""),
+    UR20 = case_when(
+      UR20 == "U" ~ "Urban",
+      UR20 == "R" ~ "Rural",
+      is.na(UR20) ~ "Unknown",
+      TRUE ~ UR20
+    )
+  )
+
+
+# =========================================================
+# 9. Spatial join
+# =========================================================
+
+cat("\nRunning spatial join...\n")
+
+joined_sf <- st_join(points_clean, eqi_clean, left = TRUE)
+
+joined_df <- joined_sf %>%
+  st_drop_geometry() %>%
+  mutate(
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "Outside polygon / No match",
+      SCREEN
+    ),
+    eqi_poly_id = if_else(
+      is.na(eqi_poly_id),
+      "No_match",
+      eqi_poly_id
+    ),
+    POP20 = if_else(
+      is.na(POP20),
+      0,
+      POP20
+    ),
+    UR20 = if_else(
+      is.na(UR20),
+      "Unknown",
+      UR20
+    )
+  )
+
+cat("\nSpatial join finished.\n")
+cat("Joined rows:", nrow(joined_df), "\n")
+
+
+# =========================================================
+# 10. Keep only matched CSR records
+# =========================================================
+
+matched_df <- joined_df %>%
+  filter(
+    !is.na(Customer_Service_Requested),
+    !is.na(SCREEN),
+    eqi_poly_id != "No_match",
+    SCREEN != "Outside polygon / No match"
+  )
+
+cat("\nMatched CSR records:", nrow(matched_df), "\n")
+
+
+# =========================================================
+# 11. All CSR matched-block population baseline by SCREEN
+#
+# Baseline universe:
+# all unique EQI polygons where at least one CSR point appeared.
+#
+# Population baseline:
+# SCREEN group's share of total population among all CSR-matched blocks.
+# =========================================================
+
+all_csr_matched_blocks <- matched_df %>%
+  distinct(
+    eqi_poly_id,
+    SCREEN,
+    POP20
+  )
+
+all_csr_population_baseline_by_screen <- all_csr_matched_blocks %>%
+  group_by(SCREEN) %>%
+  summarise(
+    all_csr_screen_block_count = n_distinct(eqi_poly_id),
+    all_csr_screen_population = sum(POP20, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    all_csr_total_matched_block_count =
+      sum(all_csr_screen_block_count, na.rm = TRUE),
+    
+    all_csr_total_population =
+      sum(all_csr_screen_population, na.rm = TRUE),
+    
+    all_csr_screen_population_share =
+      if_else(
+        all_csr_total_population > 0,
+        all_csr_screen_population / all_csr_total_population,
+        NA_real_
+      ),
+    
+    all_csr_screen_population_share_label =
+      paste0(round(all_csr_screen_population_share * 100, 2), "%")
+  ) %>%
+  arrange(SCREEN)
+
+
+# =========================================================
+# 12. Observed cases by category x SCREEN
+# =========================================================
+
+observed_category_screen_raw <- matched_df %>%
+  count(
+    Customer_Service_Requested,
+    SCREEN,
+    name = "observed_case_count"
+  )
+
+all_categories <- observed_category_screen_raw %>%
+  distinct(Customer_Service_Requested)
+
+all_screens <- all_csr_population_baseline_by_screen %>%
+  distinct(SCREEN)
+
+observed_category_screen <- tidyr::crossing(
+  all_categories,
+  all_screens
+) %>%
+  left_join(
+    observed_category_screen_raw,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  mutate(
+    observed_case_count = replace_na(observed_case_count, 0L)
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    total_cases_in_category = sum(observed_case_count),
+    
+    observed_case_share_within_category =
+      if_else(
+        total_cases_in_category > 0,
+        observed_case_count / total_cases_in_category,
+        NA_real_
+      ),
+    
+    observed_case_share_within_category_label =
+      paste0(round(observed_case_share_within_category * 100, 2), "%")
+  ) %>%
+  ungroup()
+
+
+# =========================================================
+# 13. Observed vs expected by population baseline
+# =========================================================
+
+category_screen_observed_expected_population <- observed_category_screen %>%
+  left_join(
+    all_csr_population_baseline_by_screen,
+    by = "SCREEN"
+  ) %>%
+  mutate(
+    expected_cases_by_all_csr_population =
+      total_cases_in_category * all_csr_screen_population_share,
+    
+    observed_expected_ratio_by_all_csr_population =
+      if_else(
+        expected_cases_by_all_csr_population > 0,
+        observed_case_count / expected_cases_by_all_csr_population,
+        NA_real_
+      ),
+    
+    excess_cases_by_all_csr_population =
+      observed_case_count - expected_cases_by_all_csr_population,
+    
+    expected_cases_by_all_csr_population_round =
+      round(expected_cases_by_all_csr_population, 2),
+    
+    excess_cases_by_all_csr_population_round =
+      round(excess_cases_by_all_csr_population, 2),
+    
+    observed_expected_ratio_by_all_csr_population_round =
+      round(observed_expected_ratio_by_all_csr_population, 2),
+    
+    population_representation_level =
+      get_ratio_level(
+        observed_expected_ratio_by_all_csr_population,
+        observed_case_count
+      ),
+    
+    population_moderately_or_more_elevated =
+      population_representation_level %in%
+      c("Moderately elevated", "Elevated", "Strongly elevated"),
+    
+    population_clearly_or_more_elevated =
+      population_representation_level %in%
+      c("Elevated", "Strongly elevated"),
+    
+    population_strongly_elevated =
+      population_representation_level == "Strongly elevated",
+    
+    prioritization_flag = case_when(
+      observed_case_count < min_case_count ~
+        "Low case count",
+      
+      population_representation_level == "Strongly elevated" ~
+        "High priority pattern",
+      
+      population_representation_level == "Elevated" ~
+        "Elevated priority pattern",
+      
+      population_representation_level == "Moderately elevated" ~
+        "Moderate priority pattern",
+      
+      population_representation_level == "Below expected" ~
+        "Below expected",
+      
+      population_representation_level == "Close to expected" ~
+        "Close to expected",
+      
+      TRUE ~
+        "Review"
+    ),
+    
+    interpretation = case_when(
+      population_representation_level == "Strongly elevated" ~
+        "Observed cases are at least 2 times expected based on the population distribution of all CSR-matched EQI blocks.",
+      
+      population_representation_level == "Elevated" ~
+        "Observed cases are at least 1.5 times expected based on the population distribution of all CSR-matched EQI blocks.",
+      
+      population_representation_level == "Moderately elevated" ~
+        "Observed cases are at least 1.25 times expected based on the population distribution of all CSR-matched EQI blocks.",
+      
+      population_representation_level == "Below expected" ~
+        "Observed cases are lower than expected based on the population distribution of all CSR-matched EQI blocks.",
+      
+      population_representation_level == "Close to expected" ~
+        "Observed cases are close to expected based on the population distribution of all CSR-matched EQI blocks.",
+      
+      population_representation_level == "Low case count" ~
+        "Observed case count is below the minimum threshold; interpret with caution.",
+      
+      TRUE ~
+        "Review denominator and case count."
+    )
+  ) %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    
+    observed_case_count,
+    total_cases_in_category,
+    observed_case_share_within_category,
+    observed_case_share_within_category_label,
+    
+    all_csr_screen_block_count,
+    all_csr_total_matched_block_count,
+    
+    all_csr_screen_population,
+    all_csr_total_population,
+    all_csr_screen_population_share,
+    all_csr_screen_population_share_label,
+    
+    expected_cases_by_all_csr_population,
+    expected_cases_by_all_csr_population_round,
+    excess_cases_by_all_csr_population,
+    excess_cases_by_all_csr_population_round,
+    observed_expected_ratio_by_all_csr_population,
+    observed_expected_ratio_by_all_csr_population_round,
+    
+    population_representation_level,
+    population_moderately_or_more_elevated,
+    population_clearly_or_more_elevated,
+    population_strongly_elevated,
+    prioritization_flag,
+    interpretation
+  ) %>%
+  arrange(
+    Customer_Service_Requested,
+    desc(population_clearly_or_more_elevated),
+    desc(population_moderately_or_more_elevated),
+    desc(observed_expected_ratio_by_all_csr_population),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 14. Overrepresented-only table
+# =========================================================
+
+category_screen_overrepresented_only <- category_screen_observed_expected_population %>%
+  filter(
+    observed_case_count >= min_case_count,
+    population_moderately_or_more_elevated == TRUE
+  ) %>%
+  arrange(
+    desc(population_strongly_elevated),
+    desc(population_clearly_or_more_elevated),
+    desc(observed_expected_ratio_by_all_csr_population),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 15. Response and resolution time summary
+#
+# Grouped by:
+# Customer_Service_Requested x SCREEN x UR20
+# =========================================================
+
+category_screen_ur20_time_summary <- matched_df %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN,
+    UR20
+  ) %>%
+  summarise(
+    case_count = n(),
+    
+    response_time_valid_n =
+      sum(!is.na(response_days)),
+    
+    response_days_mean =
+      mean(response_days, na.rm = TRUE),
+    
+    response_days_median =
+      median(response_days, na.rm = TRUE),
+    
+    response_days_p75 =
+      quantile(response_days, 0.75, na.rm = TRUE, names = FALSE),
+    
+    response_days_p90 =
+      quantile(response_days, 0.90, na.rm = TRUE, names = FALSE),
+    
+    response_days_missing_n =
+      sum(is.na(response_days)),
+    
+    resolution_time_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    resolution_days_mean =
+      mean(resolution_days, na.rm = TRUE),
+    
+    resolution_days_median =
+      median(resolution_days, na.rm = TRUE),
+    
+    resolution_days_p75 =
+      quantile(resolution_days, 0.75, na.rm = TRUE, names = FALSE),
+    
+    resolution_days_p90 =
+      quantile(resolution_days, 0.90, na.rm = TRUE, names = FALSE),
+    
+    resolution_days_missing_n =
+      sum(is.na(resolution_days)),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    response_days_mean = if_else(
+      is.nan(response_days_mean),
+      NA_real_,
+      response_days_mean
+    ),
+    response_days_median = if_else(
+      is.nan(response_days_median),
+      NA_real_,
+      response_days_median
+    ),
+    response_days_p75 = if_else(
+      is.nan(response_days_p75),
+      NA_real_,
+      response_days_p75
+    ),
+    response_days_p90 = if_else(
+      is.nan(response_days_p90),
+      NA_real_,
+      response_days_p90
+    ),
+    
+    resolution_days_mean = if_else(
+      is.nan(resolution_days_mean),
+      NA_real_,
+      resolution_days_mean
+    ),
+    resolution_days_median = if_else(
+      is.nan(resolution_days_median),
+      NA_real_,
+      resolution_days_median
+    ),
+    resolution_days_p75 = if_else(
+      is.nan(resolution_days_p75),
+      NA_real_,
+      resolution_days_p75
+    ),
+    resolution_days_p90 = if_else(
+      is.nan(resolution_days_p90),
+      NA_real_,
+      resolution_days_p90
+    ),
+    
+    response_days_mean_round = round(response_days_mean, 2),
+    response_days_median_round = round(response_days_median, 2),
+    response_days_p75_round = round(response_days_p75, 2),
+    response_days_p90_round = round(response_days_p90, 2),
+    
+    resolution_days_mean_round = round(resolution_days_mean, 2),
+    resolution_days_median_round = round(resolution_days_median, 2),
+    resolution_days_p75_round = round(resolution_days_p75, 2),
+    resolution_days_p90_round = round(resolution_days_p90, 2)
+  ) %>%
+  arrange(
+    Customer_Service_Requested,
+    SCREEN,
+    UR20
+  )
+
+
+# =========================================================
+# 16. Category overview summary
+#
+# This answers:
+# - total cases in each category
+# - how many SCREEN groups it falls into
+# - how many UR20 groups it falls into
+# - average response/resolution time
+# - how many SCREEN groups are elevated
+# =========================================================
+
+category_screen_count_summary <- matched_df %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    total_matched_cases = n(),
+    
+    number_of_screen_groups_with_cases =
+      n_distinct(SCREEN),
+    
+    screen_groups_with_cases =
+      paste(sort(unique(SCREEN)), collapse = "; "),
+    
+    number_of_ur20_groups_with_cases =
+      n_distinct(UR20),
+    
+    ur20_groups_with_cases =
+      paste(sort(unique(UR20)), collapse = "; "),
+    
+    category_response_valid_n =
+      sum(!is.na(response_days)),
+    
+    category_response_days_mean =
+      mean(response_days, na.rm = TRUE),
+    
+    category_response_days_median =
+      median(response_days, na.rm = TRUE),
+    
+    category_resolution_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    category_resolution_days_mean =
+      mean(resolution_days, na.rm = TRUE),
+    
+    category_resolution_days_median =
+      median(resolution_days, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    category_response_days_mean = if_else(
+      is.nan(category_response_days_mean),
+      NA_real_,
+      category_response_days_mean
+    ),
+    category_response_days_median = if_else(
+      is.nan(category_response_days_median),
+      NA_real_,
+      category_response_days_median
+    ),
+    category_resolution_days_mean = if_else(
+      is.nan(category_resolution_days_mean),
+      NA_real_,
+      category_resolution_days_mean
+    ),
+    category_resolution_days_median = if_else(
+      is.nan(category_resolution_days_median),
+      NA_real_,
+      category_resolution_days_median
+    ),
+    
+    category_response_days_mean_round =
+      round(category_response_days_mean, 2),
+    
+    category_response_days_median_round =
+      round(category_response_days_median, 2),
+    
+    category_resolution_days_mean_round =
+      round(category_resolution_days_mean, 2),
+    
+    category_resolution_days_median_round =
+      round(category_resolution_days_median, 2)
+  )
+
+category_elevated_screen_summary <- category_screen_observed_expected_population %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    number_of_moderately_or_more_elevated_screen_groups =
+      sum(population_moderately_or_more_elevated, na.rm = TRUE),
+    
+    number_of_clearly_or_more_elevated_screen_groups =
+      sum(population_clearly_or_more_elevated, na.rm = TRUE),
+    
+    elevated_screen_groups =
+      paste(
+        SCREEN[population_moderately_or_more_elevated == TRUE],
+        collapse = "; "
+      ),
+    
+    max_observed_expected_ratio_population =
+      max(observed_expected_ratio_by_all_csr_population, na.rm = TRUE),
+    
+    top_screen_by_population_ratio =
+      SCREEN[
+        which.max(
+          replace_na(observed_expected_ratio_by_all_csr_population, -Inf)
+        )
+      ],
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    max_observed_expected_ratio_population = if_else(
+      is.infinite(max_observed_expected_ratio_population),
+      NA_real_,
+      max_observed_expected_ratio_population
+    ),
+    
+    max_observed_expected_ratio_population_round =
+      round(max_observed_expected_ratio_population, 2)
+  )
+
+category_overview_summary <- category_screen_count_summary %>%
+  left_join(
+    category_elevated_screen_summary,
+    by = "Customer_Service_Requested"
+  ) %>%
+  arrange(
+    desc(number_of_clearly_or_more_elevated_screen_groups),
+    desc(number_of_moderately_or_more_elevated_screen_groups),
+    desc(total_matched_cases)
+  )
+
+
+# =========================================================
+# 17. Export outputs
+# =========================================================
+
+cat("\nExporting outputs...\n")
+
+safe_write_csv(
+  all_csr_population_baseline_by_screen,
+  output_baseline_csv
+)
+
+safe_write_csv(
+  category_screen_observed_expected_population,
+  output_observed_expected_csv
+)
+
+safe_write_csv(
+  category_screen_overrepresented_only,
+  output_overrepresented_csv
+)
+
+safe_write_csv(
+  category_screen_ur20_time_summary,
+  output_time_summary_csv
+)
+
+safe_write_csv(
+  category_overview_summary,
+  output_category_overview_csv
+)
+
+cat("\nDone: CSR EQI prioritization analysis.\n")
+
+cat("\nOutputs saved to:\n")
+cat(output_baseline_csv, "\n")
+cat(output_observed_expected_csv, "\n")
+cat(output_overrepresented_csv, "\n")
+cat(output_time_summary_csv, "\n")
+cat(output_category_overview_csv, "\n")
+
+cat("\nOutput row counts:\n")
+cat("01_all_csr_population_baseline_by_screen:", nrow(all_csr_population_baseline_by_screen), "\n")
+cat("02_category_screen_observed_expected_population:", nrow(category_screen_observed_expected_population), "\n")
+cat("03_category_screen_overrepresented_only:", nrow(category_screen_overrepresented_only), "\n")
+cat("04_category_screen_ur20_time_summary:", nrow(category_screen_ur20_time_summary), "\n")
+cat("05_category_overview_summary:", nrow(category_overview_summary), "\n")
