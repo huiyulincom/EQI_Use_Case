@@ -1,0 +1,820 @@
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+
+# =========================================================
+# 1. Input and output paths
+# =========================================================
+
+input_file <- "C:/Users/s160418/Desktop/CSR_EQI_Prioritization_Output/06_category_screen_combined_prioritization_summary.csv"
+
+output_folder <- "C:/Users/s160418/Desktop/CSR_EQI_Prioritization_Output/Summary_Tables_and_Figures"
+
+figure_folder <- file.path(output_folder, "Per_Category_Figures")
+
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+if (!dir.exists(figure_folder)) {
+  dir.create(figure_folder, recursive = TRUE)
+}
+
+output_category_summary <- file.path(
+  output_folder,
+  "07_category_final_summary.csv"
+)
+
+output_presentation_table <- file.path(
+  output_folder,
+  "08_category_screen_presentation_table.csv"
+)
+
+# Minimum case count for interpretation
+min_case_count <- 10
+
+# Number of categories to show in heatmaps
+top_n_categories_for_heatmap <- 30
+
+
+# =========================================================
+# 2. Helper functions
+# =========================================================
+
+safe_write_csv <- function(df, path) {
+  df <- as.data.frame(df)
+  
+  numeric_cols <- names(df)[sapply(df, is.numeric)]
+  if (length(numeric_cols) > 0) {
+    for (col in numeric_cols) {
+      df[[col]][is.infinite(df[[col]]) | is.nan(df[[col]])] <- NA_real_
+    }
+  }
+  
+  readr::write_csv(df, path, na = "")
+  cat("Wrote:", path, "\n")
+}
+
+sanitize_filename <- function(x) {
+  x %>%
+    str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    str_replace_all("_+", "_") %>%
+    str_replace_all("^_|_$", "") %>%
+    str_sub(1, 80)
+}
+
+get_first_non_na <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) {
+    return(NA)
+  } else {
+    return(x[1])
+  }
+}
+
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & x != ""])
+  if (length(x) == 0) {
+    return("")
+  } else {
+    return(paste(sort(x), collapse = "; "))
+  }
+}
+
+
+# =========================================================
+# 3. Read combined summary table
+# =========================================================
+
+df <- readr::read_csv(input_file, show_col_types = FALSE)
+
+# Make sure key numeric columns are numeric
+numeric_fields <- c(
+  "observed_case_count",
+  "total_cases_in_category",
+  "expected_cases_by_all_csr_population_round",
+  "observed_expected_ratio_by_all_csr_population_round",
+  "response_days_mean_round",
+  "response_days_median_round",
+  "resolution_days_mean_round",
+  "resolution_days_median_round",
+  "response_mean_ratio_vs_category_round",
+  "response_median_ratio_vs_category_round",
+  "resolution_mean_ratio_vs_category_round",
+  "resolution_median_ratio_vs_category_round",
+  "urban_case_count",
+  "rural_case_count",
+  "unknown_ur20_case_count",
+  "urban_response_median_round",
+  "rural_response_median_round",
+  "urban_resolution_median_round",
+  "rural_resolution_median_round"
+)
+
+for (col in numeric_fields) {
+  if (col %in% names(df)) {
+    df[[col]] <- suppressWarnings(as.numeric(df[[col]]))
+  }
+}
+
+df <- df %>%
+  mutate(
+    Customer_Service_Requested = as.character(Customer_Service_Requested),
+    SCREEN = as.character(SCREEN),
+    
+    screen_has_cases = observed_case_count > 0,
+    
+    interpretable_case_count =
+      observed_case_count >= min_case_count,
+    
+    overrepresentation_group = case_when(
+      population_representation_level == "Strongly elevated" ~
+        "Strongly elevated",
+      population_representation_level == "Elevated" ~
+        "Elevated",
+      population_representation_level == "Moderately elevated" ~
+        "Moderately elevated",
+      population_representation_level == "Close to expected" ~
+        "Close to expected",
+      population_representation_level == "Below expected" ~
+        "Below expected",
+      population_representation_level == "Low case count" ~
+        "Low case count",
+      TRUE ~ "Other"
+    ),
+    
+    max_median_delay_ratio = pmax(
+      response_median_ratio_vs_category_round,
+      resolution_median_ratio_vs_category_round,
+      na.rm = TRUE
+    ),
+    
+    max_median_delay_ratio = if_else(
+      is.infinite(max_median_delay_ratio),
+      NA_real_,
+      max_median_delay_ratio
+    ),
+    
+    response_or_resolution_delay = case_when(
+      response_median_delay_level %in% c("Slower", "Much slower") |
+        resolution_median_delay_level %in% c("Slower", "Much slower") ~
+        "Clear typical delay",
+      
+      response_median_delay_level == "Moderately slower" |
+        resolution_median_delay_level == "Moderately slower" ~
+        "Moderate typical delay",
+      
+      response_long_tail_delay_flag == TRUE |
+        resolution_long_tail_delay_flag == TRUE ~
+        "Long-tail backlog",
+      
+      TRUE ~ "No clear delay"
+    )
+  )
+
+
+# =========================================================
+# 4. Presentation-ready category x SCREEN table
+#
+# One row = category x SCREEN
+# This is a simplified table for reporting.
+# =========================================================
+
+category_screen_presentation_table <- df %>%
+  filter(
+    observed_case_count > 0
+  ) %>%
+  transmute(
+    category = Customer_Service_Requested,
+    screen = SCREEN,
+    
+    observed_cases = observed_case_count,
+    total_cases_in_category = total_cases_in_category,
+    
+    observed_case_share =
+      observed_case_share_within_category_label,
+    
+    expected_cases_population_baseline =
+      expected_cases_by_all_csr_population_round,
+    
+    observed_expected_ratio_population =
+      observed_expected_ratio_by_all_csr_population_round,
+    
+    overrepresentation_level =
+      population_representation_level,
+    
+    priority_review_group =
+      priority_review_group,
+    
+    category_response_median_days =
+      category_response_days_median_round,
+    
+    screen_response_median_days =
+      response_days_median_round,
+    
+    response_median_ratio_vs_category =
+      response_median_ratio_vs_category_round,
+    
+    response_delay_level =
+      response_median_delay_level,
+    
+    category_resolution_median_days =
+      category_resolution_days_median_round,
+    
+    screen_resolution_median_days =
+      resolution_days_median_round,
+    
+    resolution_median_ratio_vs_category =
+      resolution_median_ratio_vs_category_round,
+    
+    resolution_delay_level =
+      resolution_median_delay_level,
+    
+    response_long_tail_delay_flag =
+      response_long_tail_delay_flag,
+    
+    resolution_long_tail_delay_flag =
+      resolution_long_tail_delay_flag,
+    
+    urban_cases =
+      urban_case_count,
+    
+    rural_cases =
+      rural_case_count,
+    
+    unknown_ur20_cases =
+      unknown_ur20_case_count,
+    
+    urban_response_median_days =
+      urban_response_median_round,
+    
+    rural_response_median_days =
+      rural_response_median_round,
+    
+    urban_resolution_median_days =
+      urban_resolution_median_round,
+    
+    rural_resolution_median_days =
+      rural_resolution_median_round,
+    
+    delay_interpretation =
+      delay_interpretation,
+    
+    representation_interpretation =
+      representation_interpretation
+  ) %>%
+  arrange(
+    desc(priority_review_group == "High priority: elevated representation + typical delay"),
+    desc(priority_review_group == "Priority review: elevated representation + moderate typical delay"),
+    desc(priority_review_group == "Backlog review: elevated representation + long-tail delay"),
+    desc(overrepresentation_level == "Strongly elevated"),
+    desc(overrepresentation_level == "Elevated"),
+    desc(overrepresentation_level == "Moderately elevated"),
+    desc(observed_expected_ratio_population),
+    desc(response_median_ratio_vs_category),
+    desc(resolution_median_ratio_vs_category)
+  )
+
+
+# =========================================================
+# 5. Category-level final summary
+#
+# One row = category
+# This is the best table for a high-level report.
+# =========================================================
+
+category_base <- df %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    total_cases_in_category =
+      max(total_cases_in_category, na.rm = TRUE),
+    
+    number_of_screen_groups_with_cases =
+      sum(observed_case_count > 0, na.rm = TRUE),
+    
+    screen_groups_with_cases =
+      collapse_unique(SCREEN[observed_case_count > 0]),
+    
+    category_response_valid_n =
+      get_first_non_na(category_response_valid_n),
+    
+    category_response_days_mean =
+      get_first_non_na(category_response_days_mean_round),
+    
+    category_response_days_median =
+      get_first_non_na(category_response_days_median_round),
+    
+    category_resolution_valid_n =
+      get_first_non_na(category_resolution_valid_n),
+    
+    category_resolution_days_mean =
+      get_first_non_na(category_resolution_days_mean_round),
+    
+    category_resolution_days_median =
+      get_first_non_na(category_resolution_days_median_round),
+    
+    total_urban_cases =
+      sum(urban_case_count, na.rm = TRUE),
+    
+    total_rural_cases =
+      sum(rural_case_count, na.rm = TRUE),
+    
+    total_unknown_ur20_cases =
+      sum(unknown_ur20_case_count, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+elevated_summary <- df %>%
+  filter(
+    observed_case_count >= min_case_count,
+    population_representation_level %in%
+      c("Moderately elevated", "Elevated", "Strongly elevated")
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    number_of_elevated_screen_groups = n(),
+    elevated_screen_groups = collapse_unique(SCREEN),
+    .groups = "drop"
+  )
+
+clear_elevated_summary <- df %>%
+  filter(
+    observed_case_count >= min_case_count,
+    population_representation_level %in%
+      c("Elevated", "Strongly elevated")
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    number_of_clearly_elevated_screen_groups = n(),
+    clearly_elevated_screen_groups = collapse_unique(SCREEN),
+    .groups = "drop"
+  )
+
+priority_summary <- df %>%
+  filter(
+    priority_review_group %in% c(
+      "High priority: elevated representation + typical delay",
+      "Priority review: elevated representation + moderate typical delay",
+      "Backlog review: elevated representation + long-tail delay"
+    )
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    number_of_priority_screen_groups = n(),
+    priority_screen_groups = collapse_unique(SCREEN),
+    priority_review_types = collapse_unique(priority_review_group),
+    .groups = "drop"
+  )
+
+top_overrep <- df %>%
+  filter(
+    observed_case_count >= min_case_count,
+    !is.na(observed_expected_ratio_by_all_csr_population_round)
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  slice_max(
+    order_by = observed_expected_ratio_by_all_csr_population_round,
+    n = 1,
+    with_ties = FALSE
+  ) %>%
+  ungroup() %>%
+  transmute(
+    Customer_Service_Requested,
+    top_overrepresented_screen = SCREEN,
+    max_observed_expected_ratio_population =
+      observed_expected_ratio_by_all_csr_population_round,
+    top_overrepresented_screen_cases =
+      observed_case_count,
+    top_overrepresented_screen_level =
+      population_representation_level
+  )
+
+top_response_delay <- df %>%
+  filter(
+    observed_case_count >= min_case_count,
+    !is.na(response_median_ratio_vs_category_round)
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  slice_max(
+    order_by = response_median_ratio_vs_category_round,
+    n = 1,
+    with_ties = FALSE
+  ) %>%
+  ungroup() %>%
+  transmute(
+    Customer_Service_Requested,
+    slowest_response_screen = SCREEN,
+    max_response_median_ratio_vs_category =
+      response_median_ratio_vs_category_round,
+    slowest_response_screen_median_days =
+      response_days_median_round,
+    category_response_median_days =
+      category_response_days_median_round,
+    slowest_response_delay_level =
+      response_median_delay_level
+  )
+
+top_resolution_delay <- df %>%
+  filter(
+    observed_case_count >= min_case_count,
+    !is.na(resolution_median_ratio_vs_category_round)
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  slice_max(
+    order_by = resolution_median_ratio_vs_category_round,
+    n = 1,
+    with_ties = FALSE
+  ) %>%
+  ungroup() %>%
+  transmute(
+    Customer_Service_Requested,
+    slowest_resolution_screen = SCREEN,
+    max_resolution_median_ratio_vs_category =
+      resolution_median_ratio_vs_category_round,
+    slowest_resolution_screen_median_days =
+      resolution_days_median_round,
+    category_resolution_median_days =
+      category_resolution_days_median_round,
+    slowest_resolution_delay_level =
+      resolution_median_delay_level
+  )
+
+long_tail_summary <- df %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    number_of_response_long_tail_screens =
+      sum(response_long_tail_delay_flag == TRUE, na.rm = TRUE),
+    
+    response_long_tail_screens =
+      collapse_unique(SCREEN[response_long_tail_delay_flag == TRUE]),
+    
+    number_of_resolution_long_tail_screens =
+      sum(resolution_long_tail_delay_flag == TRUE, na.rm = TRUE),
+    
+    resolution_long_tail_screens =
+      collapse_unique(SCREEN[resolution_long_tail_delay_flag == TRUE]),
+    
+    .groups = "drop"
+  )
+
+category_final_summary <- category_base %>%
+  left_join(elevated_summary, by = "Customer_Service_Requested") %>%
+  left_join(clear_elevated_summary, by = "Customer_Service_Requested") %>%
+  left_join(priority_summary, by = "Customer_Service_Requested") %>%
+  left_join(top_overrep, by = "Customer_Service_Requested") %>%
+  left_join(top_response_delay, by = "Customer_Service_Requested") %>%
+  left_join(top_resolution_delay, by = "Customer_Service_Requested") %>%
+  left_join(long_tail_summary, by = "Customer_Service_Requested") %>%
+  mutate(
+    across(
+      c(
+        number_of_elevated_screen_groups,
+        number_of_clearly_elevated_screen_groups,
+        number_of_priority_screen_groups,
+        number_of_response_long_tail_screens,
+        number_of_resolution_long_tail_screens
+      ),
+      ~ replace_na(.x, 0)
+    ),
+    
+    category_summary_interpretation = case_when(
+      number_of_priority_screen_groups > 0 ~
+        "This category has at least one SCREEN group with elevated representation and slower typical response or resolution time.",
+      
+      number_of_clearly_elevated_screen_groups > 0 ~
+        "This category has at least one SCREEN group that is clearly overrepresented, but no clear typical delay was flagged.",
+      
+      number_of_elevated_screen_groups > 0 ~
+        "This category has at least one SCREEN group that is moderately overrepresented.",
+      
+      number_of_response_long_tail_screens > 0 |
+        number_of_resolution_long_tail_screens > 0 ~
+        "This category has potential long-tail delay or backlog patterns.",
+      
+      TRUE ~
+        "No major overrepresentation or delay pattern was flagged."
+    )
+  ) %>%
+  arrange(
+    desc(number_of_priority_screen_groups),
+    desc(number_of_clearly_elevated_screen_groups),
+    desc(number_of_elevated_screen_groups),
+    desc(max_observed_expected_ratio_population),
+    desc(total_cases_in_category)
+  )
+
+
+# =========================================================
+# 6. Export summary tables
+# =========================================================
+
+safe_write_csv(
+  category_final_summary,
+  output_category_summary
+)
+
+safe_write_csv(
+  category_screen_presentation_table,
+  output_presentation_table
+)
+
+
+# =========================================================
+# 7. Prepare data for figures
+# =========================================================
+
+top_categories <- df %>%
+  distinct(Customer_Service_Requested, total_cases_in_category) %>%
+  arrange(desc(total_cases_in_category)) %>%
+  slice_head(n = top_n_categories_for_heatmap) %>%
+  pull(Customer_Service_Requested)
+
+plot_df <- df %>%
+  filter(
+    Customer_Service_Requested %in% top_categories,
+    observed_case_count > 0
+  )
+
+# Keep category order by total cases
+category_order <- df %>%
+  distinct(Customer_Service_Requested, total_cases_in_category) %>%
+  arrange(total_cases_in_category) %>%
+  pull(Customer_Service_Requested)
+
+plot_df <- plot_df %>%
+  mutate(
+    Customer_Service_Requested = factor(
+      Customer_Service_Requested,
+      levels = category_order
+    )
+  )
+
+
+# =========================================================
+# 8. Figure 1: Overrepresentation heatmap
+# =========================================================
+
+p1 <- ggplot(
+  plot_df,
+  aes(
+    x = SCREEN,
+    y = Customer_Service_Requested,
+    fill = observed_expected_ratio_by_all_csr_population_round
+  )
+) +
+  geom_tile() +
+  geom_text(
+    aes(label = if_else(
+      is.na(observed_expected_ratio_by_all_csr_population_round),
+      "",
+      as.character(round(observed_expected_ratio_by_all_csr_population_round, 1))
+    )),
+    size = 2.5
+  ) +
+  labs(
+    title = "Observed-to-Expected Ratio by CSR Category and EQI SCREEN",
+    subtitle = "Population baseline: all CSR-matched EQI blocks",
+    x = "EQI SCREEN",
+    y = "CSR Category",
+    fill = "Observed / Expected"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+ggsave(
+  filename = file.path(output_folder, "fig_01_overrepresentation_heatmap.png"),
+  plot = p1,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# =========================================================
+# 9. Figure 2: Response delay heatmap
+# =========================================================
+
+p2 <- ggplot(
+  plot_df,
+  aes(
+    x = SCREEN,
+    y = Customer_Service_Requested,
+    fill = response_median_ratio_vs_category_round
+  )
+) +
+  geom_tile() +
+  geom_text(
+    aes(label = if_else(
+      is.na(response_median_ratio_vs_category_round),
+      "",
+      as.character(round(response_median_ratio_vs_category_round, 1))
+    )),
+    size = 2.5
+  ) +
+  labs(
+    title = "Response Time Ratio by CSR Category and EQI SCREEN",
+    subtitle = "Median response time in SCREEN group divided by category-wide median response time",
+    x = "EQI SCREEN",
+    y = "CSR Category",
+    fill = "Response Ratio"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+ggsave(
+  filename = file.path(output_folder, "fig_02_response_delay_heatmap.png"),
+  plot = p2,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# =========================================================
+# 10. Figure 3: Resolution delay heatmap
+# =========================================================
+
+p3 <- ggplot(
+  plot_df,
+  aes(
+    x = SCREEN,
+    y = Customer_Service_Requested,
+    fill = resolution_median_ratio_vs_category_round
+  )
+) +
+  geom_tile() +
+  geom_text(
+    aes(label = if_else(
+      is.na(resolution_median_ratio_vs_category_round),
+      "",
+      as.character(round(resolution_median_ratio_vs_category_round, 1))
+    )),
+    size = 2.5
+  ) +
+  labs(
+    title = "Resolution Time Ratio by CSR Category and EQI SCREEN",
+    subtitle = "Median resolution time in SCREEN group divided by category-wide median resolution time",
+    x = "EQI SCREEN",
+    y = "CSR Category",
+    fill = "Resolution Ratio"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+ggsave(
+  filename = file.path(output_folder, "fig_03_resolution_delay_heatmap.png"),
+  plot = p3,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# =========================================================
+# 11. Figure 4: Priority bubble plot
+#
+# X = overrepresentation ratio
+# Y = max of response/resolution median delay ratio
+# Size = observed cases
+# Label = category + SCREEN for highest priority points
+# =========================================================
+
+bubble_df <- df %>%
+  filter(
+    observed_case_count >= min_case_count,
+    !is.na(observed_expected_ratio_by_all_csr_population_round),
+    !is.na(max_median_delay_ratio)
+  ) %>%
+  mutate(
+    label_text = if_else(
+      priority_review_group %in% c(
+        "High priority: elevated representation + typical delay",
+        "Priority review: elevated representation + moderate typical delay",
+        "Backlog review: elevated representation + long-tail delay"
+      ),
+      paste0(Customer_Service_Requested, "\n", SCREEN),
+      ""
+    )
+  )
+
+p4 <- ggplot(
+  bubble_df,
+  aes(
+    x = observed_expected_ratio_by_all_csr_population_round,
+    y = max_median_delay_ratio,
+    size = observed_case_count
+  )
+) +
+  geom_point(alpha = 0.65) +
+  geom_vline(xintercept = 1.25, linetype = "dashed") +
+  geom_vline(xintercept = 1.50, linetype = "dashed") +
+  geom_hline(yintercept = 1.25, linetype = "dashed") +
+  geom_hline(yintercept = 1.50, linetype = "dashed") +
+  geom_text(
+    aes(label = label_text),
+    size = 2.5,
+    vjust = -0.7,
+    check_overlap = TRUE
+  ) +
+  labs(
+    title = "CSR Prioritization Bubble Plot",
+    subtitle = "Higher right = more overrepresented; higher up = slower response/resolution relative to category",
+    x = "Observed-to-Expected Ratio, Population Baseline",
+    y = "Max Median Delay Ratio vs Category",
+    size = "Observed Cases"
+  ) +
+  theme_minimal()
+
+ggsave(
+  filename = file.path(output_folder, "fig_04_priority_bubble_plot.png"),
+  plot = p4,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+
+# =========================================================
+# 12. Per-category figures
+#
+# One chart per category:
+# observed-to-expected ratio by SCREEN
+# =========================================================
+
+categories <- sort(unique(df$Customer_Service_Requested))
+
+for (cat_name in categories) {
+  
+  cat_df <- df %>%
+    filter(
+      Customer_Service_Requested == cat_name,
+      observed_case_count > 0
+    ) %>%
+    arrange(desc(observed_expected_ratio_by_all_csr_population_round))
+  
+  if (nrow(cat_df) == 0) {
+    next
+  }
+  
+  p_cat <- ggplot(
+    cat_df,
+    aes(
+      x = reorder(SCREEN, observed_expected_ratio_by_all_csr_population_round),
+      y = observed_expected_ratio_by_all_csr_population_round
+    )
+  ) +
+    geom_col() +
+    geom_hline(yintercept = 1.00, linetype = "solid") +
+    geom_hline(yintercept = 1.25, linetype = "dashed") +
+    geom_hline(yintercept = 1.50, linetype = "dashed") +
+    geom_hline(yintercept = 2.00, linetype = "dotted") +
+    geom_text(
+      aes(
+        label = paste0(
+          "n=", observed_case_count,
+          "\n",
+          round(observed_expected_ratio_by_all_csr_population_round, 2)
+        )
+      ),
+      hjust = -0.1,
+      size = 3
+    ) +
+    coord_flip() +
+    labs(
+      title = paste0("Observed-to-Expected Ratio by SCREEN: ", cat_name),
+      subtitle = "Dashed lines: 1.25 and 1.50; dotted line: 2.00",
+      x = "EQI SCREEN",
+      y = "Observed-to-Expected Ratio, Population Baseline"
+    ) +
+    theme_minimal()
+  
+  file_name <- paste0(
+    "category_overrepresentation_",
+    sanitize_filename(cat_name),
+    ".png"
+  )
+  
+  ggsave(
+    filename = file.path(figure_folder, file_name),
+    plot = p_cat,
+    width = 9,
+    height = 6,
+    dpi = 300
+  )
+}
+
+cat("\nDone. Summary tables and figures saved to:\n")
+cat(output_folder, "\n")
