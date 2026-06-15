@@ -1,6 +1,6 @@
 # =========================================================
 # 23. Fig 04A and Fig 04B:
-# Split delay charts with Fig05-style colors
+# Split delay charts using methodology-based colors
 #
 # Fig 04A:
 # Response median days by CSR category x EQI SCREEN
@@ -10,12 +10,10 @@
 #
 # Bars = SCREEN-specific median days
 #
-# Color logic uses overall median as the baseline:
-# Blue   = at or below baseline
-# Gray   = close to baseline
-# Yellow = moderately above baseline
-# Orange = above baseline
-# Red    = strongly above baseline
+# Color logic:
+# Use the same methodology-based delay level as the heatmap:
+#   response_median_delay_level
+#   resolution_median_delay_level
 #
 # Reference lines:
 # solid  = overall average
@@ -42,14 +40,13 @@ category_screen_delay_chart_data <- category_screen_chart_data %>%
     response_time_valid_n,
     response_days_average_round,
     response_days_median_round,
+    response_average_ratio_vs_category_round,
+    response_median_ratio_vs_category_round,
+    response_median_delay_level,
     
     resolution_time_valid_n,
     resolution_days_average_round,
     resolution_days_median_round,
-    
-    response_average_ratio_vs_category_round,
-    response_median_ratio_vs_category_round,
-    
     resolution_average_ratio_vs_category_round,
     resolution_median_ratio_vs_category_round,
     resolution_median_delay_level,
@@ -77,6 +74,7 @@ overall_resolution_median  <- overall_delay_summary$resolution_days_median_round
 
 # =========================================================
 # Fig 04A: Response median days
+# Color = response_median_delay_level
 # =========================================================
 
 response_chart_data <- category_screen_delay_chart_data %>%
@@ -84,45 +82,41 @@ response_chart_data <- category_screen_delay_chart_data %>%
     !is.na(response_days_median_round)
   ) %>%
   mutate(
-    response_delay_level_for_plot = case_when(
-      is.na(response_days_median_round) ~ "Other / missing",
+    response_level_for_plot = case_when(
+      response_median_delay_level == "Faster than category typical" ~
+        "Faster than category typical",
       
-      !is.na(overall_response_median) &
-        overall_response_median > 0 &
-        response_days_median_round <= overall_response_median ~
-        "At or below baseline",
+      response_median_delay_level == "Similar to category typical" ~
+        "Similar to category typical",
       
-      !is.na(overall_response_median) &
-        overall_response_median > 0 &
-        response_days_median_round <= overall_response_median * 1.25 ~
-        "Close to baseline",
+      response_median_delay_level == "Moderately slower" ~
+        "Moderately slower",
       
-      !is.na(overall_response_median) &
-        overall_response_median > 0 &
-        response_days_median_round <= overall_response_median * 1.50 ~
-        "Moderately above baseline",
+      response_median_delay_level == "Slower" ~
+        "Slower",
       
-      !is.na(overall_response_median) &
-        overall_response_median > 0 &
-        response_days_median_round <= overall_response_median * 2.00 ~
-        "Above baseline",
+      response_median_delay_level == "Much slower" ~
+        "Much slower",
       
-      !is.na(overall_response_median) &
-        overall_response_median > 0 &
-        response_days_median_round > overall_response_median * 2.00 ~
-        "Strongly above baseline",
+      response_median_delay_level == "Low valid time count" ~
+        "Low valid time count",
+      
+      response_median_delay_level == "No valid category baseline" ~
+        "No valid category baseline",
       
       TRUE ~ "Other / missing"
     ),
     
-    response_delay_level_for_plot = factor(
-      response_delay_level_for_plot,
+    response_level_for_plot = factor(
+      response_level_for_plot,
       levels = c(
-        "At or below baseline",
-        "Close to baseline",
-        "Moderately above baseline",
-        "Above baseline",
-        "Strongly above baseline",
+        "Faster than category typical",
+        "Similar to category typical",
+        "Moderately slower",
+        "Slower",
+        "Much slower",
+        "Low valid time count",
+        "No valid category baseline",
         "Other / missing"
       )
     ),
@@ -182,7 +176,7 @@ p_response_median_days <- ggplot(
   aes(
     x = response_days_median_round,
     y = category_screen_label,
-    fill = response_delay_level_for_plot
+    fill = response_level_for_plot
   )
 ) +
   geom_col(width = 0.7) +
@@ -202,11 +196,13 @@ p_response_median_days <- ggplot(
   ) +
   scale_fill_manual(
     values = c(
-      "At or below baseline" = "#2C7BB6",
-      "Close to baseline" = "#D9D9D9",
-      "Moderately above baseline" = "#FFFFBF",
-      "Above baseline" = "#FDAE61",
-      "Strongly above baseline" = "#D7191C",
+      "Faster than category typical" = "#2C7BB6",
+      "Similar to category typical" = "#D9D9D9",
+      "Moderately slower" = "#FFFFBF",
+      "Slower" = "#FDAE61",
+      "Much slower" = "#D7191C",
+      "Low valid time count" = "#F0F0F0",
+      "No valid category baseline" = "#BDBDBD",
       "Other / missing" = "white"
     ),
     drop = FALSE
@@ -220,7 +216,7 @@ p_response_median_days <- ggplot(
   ) +
   labs(
     title = "Response Median Days by CSR Category x EQI SCREEN",
-    subtitle = "Sorted by SCREEN-specific median response days. Colors compare each value with the overall response median baseline.",
+    subtitle = "Colors use methodology-based delay level: SCREEN median response time divided by category-wide median response time. Lines show overall response average and median.",
     x = "Median response days",
     y = "CSR Category x EQI SCREEN",
     fill = "Response delay level",
@@ -261,6 +257,7 @@ cat("Fig 04A exists:", file.exists(fig04a_path), "\n")
 
 # =========================================================
 # Fig 04B: Resolution median days
+# Color = resolution_median_delay_level
 # =========================================================
 
 resolution_chart_data <- category_screen_delay_chart_data %>%
@@ -268,45 +265,41 @@ resolution_chart_data <- category_screen_delay_chart_data %>%
     !is.na(resolution_days_median_round)
   ) %>%
   mutate(
-    resolution_delay_level_for_plot = case_when(
-      is.na(resolution_days_median_round) ~ "Other / missing",
+    resolution_level_for_plot = case_when(
+      resolution_median_delay_level == "Faster than category typical" ~
+        "Faster than category typical",
       
-      !is.na(overall_resolution_median) &
-        overall_resolution_median > 0 &
-        resolution_days_median_round <= overall_resolution_median ~
-        "At or below baseline",
+      resolution_median_delay_level == "Similar to category typical" ~
+        "Similar to category typical",
       
-      !is.na(overall_resolution_median) &
-        overall_resolution_median > 0 &
-        resolution_days_median_round <= overall_resolution_median * 1.25 ~
-        "Close to baseline",
+      resolution_median_delay_level == "Moderately slower" ~
+        "Moderately slower",
       
-      !is.na(overall_resolution_median) &
-        overall_resolution_median > 0 &
-        resolution_days_median_round <= overall_resolution_median * 1.50 ~
-        "Moderately above baseline",
+      resolution_median_delay_level == "Slower" ~
+        "Slower",
       
-      !is.na(overall_resolution_median) &
-        overall_resolution_median > 0 &
-        resolution_days_median_round <= overall_resolution_median * 2.00 ~
-        "Above baseline",
+      resolution_median_delay_level == "Much slower" ~
+        "Much slower",
       
-      !is.na(overall_resolution_median) &
-        overall_resolution_median > 0 &
-        resolution_days_median_round > overall_resolution_median * 2.00 ~
-        "Strongly above baseline",
+      resolution_median_delay_level == "Low valid time count" ~
+        "Low valid time count",
+      
+      resolution_median_delay_level == "No valid category baseline" ~
+        "No valid category baseline",
       
       TRUE ~ "Other / missing"
     ),
     
-    resolution_delay_level_for_plot = factor(
-      resolution_delay_level_for_plot,
+    resolution_level_for_plot = factor(
+      resolution_level_for_plot,
       levels = c(
-        "At or below baseline",
-        "Close to baseline",
-        "Moderately above baseline",
-        "Above baseline",
-        "Strongly above baseline",
+        "Faster than category typical",
+        "Similar to category typical",
+        "Moderately slower",
+        "Slower",
+        "Much slower",
+        "Low valid time count",
+        "No valid category baseline",
         "Other / missing"
       )
     ),
@@ -366,7 +359,7 @@ p_resolution_median_days <- ggplot(
   aes(
     x = resolution_days_median_round,
     y = category_screen_label,
-    fill = resolution_delay_level_for_plot
+    fill = resolution_level_for_plot
   )
 ) +
   geom_col(width = 0.7) +
@@ -386,11 +379,13 @@ p_resolution_median_days <- ggplot(
   ) +
   scale_fill_manual(
     values = c(
-      "At or below baseline" = "#2C7BB6",
-      "Close to baseline" = "#D9D9D9",
-      "Moderately above baseline" = "#FFFFBF",
-      "Above baseline" = "#FDAE61",
-      "Strongly above baseline" = "#D7191C",
+      "Faster than category typical" = "#2C7BB6",
+      "Similar to category typical" = "#D9D9D9",
+      "Moderately slower" = "#FFFFBF",
+      "Slower" = "#FDAE61",
+      "Much slower" = "#D7191C",
+      "Low valid time count" = "#F0F0F0",
+      "No valid category baseline" = "#BDBDBD",
       "Other / missing" = "white"
     ),
     drop = FALSE
@@ -404,7 +399,7 @@ p_resolution_median_days <- ggplot(
   ) +
   labs(
     title = "Resolution Median Days by CSR Category x EQI SCREEN",
-    subtitle = "Sorted by SCREEN-specific median resolution days. Colors compare each value with the overall resolution median baseline.",
+    subtitle = "Colors use methodology-based delay level: SCREEN median resolution time divided by category-wide median resolution time. Lines show overall resolution average and median.",
     x = "Median resolution days",
     y = "CSR Category x EQI SCREEN",
     fill = "Resolution delay level",
