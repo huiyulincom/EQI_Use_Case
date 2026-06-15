@@ -1,0 +1,304 @@
+# =========================================================
+# 22. Category x SCREEN delay chart with OVERALL baseline
+#
+# One total chart only.
+#
+# Row = CSR category x EQI SCREEN
+# Bars = SCREEN-specific average / median days
+# Vertical lines = overall CSR average / median baseline
+#
+# Response baseline:
+#   overall response average / median
+#
+# Resolution baseline:
+#   overall resolution average / median
+# =========================================================
+
+output_08_category_screen_delay_chart_data <- file.path(
+  output_folder,
+  "08_category_screen_delay_chart_data.csv"
+)
+
+# Number of category x SCREEN combinations shown in the chart
+# You can increase this if you want more rows.
+top_n_category_screen_for_delay_bar <- 60
+
+
+# ---------------------------------------------------------
+# 22A. Prepare category x SCREEN delay chart data
+# ---------------------------------------------------------
+
+category_screen_delay_chart_data <- client_base_category_screen_summary %>%
+  filter(
+    observed_case_count > 0
+  ) %>%
+  mutate(
+    category_screen_label = paste0(
+      Customer_Service_Requested,
+      " | SCREEN ",
+      SCREEN,
+      " | n=",
+      observed_case_count
+    ),
+    
+    priority_rank = case_when(
+      priority_review_group == "High priority: elevated representation + slower resolution" ~ 1,
+      priority_review_group == "Priority review: elevated representation + moderate resolution delay" ~ 2,
+      priority_review_group == "Backlog review: elevated representation + long-tail resolution delay" ~ 3,
+      priority_review_group == "Elevated representation" ~ 4,
+      priority_review_group == "Moderately elevated representation" ~ 5,
+      priority_review_group == "Resolution delay review" ~ 6,
+      priority_review_group == "Resolution backlog review" ~ 7,
+      TRUE ~ 8
+    )
+  ) %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    category_screen_label,
+    
+    observed_case_count,
+    total_cases_in_category,
+    priority_review_group,
+    priority_rank,
+    
+    population_representation_level,
+    observed_expected_ratio_by_all_csr_population_round,
+    
+    response_time_valid_n,
+    response_days_average_round,
+    response_days_median_round,
+    
+    resolution_time_valid_n,
+    resolution_days_average_round,
+    resolution_days_median_round,
+    
+    response_average_ratio_vs_category_round,
+    response_median_ratio_vs_category_round,
+    
+    resolution_average_ratio_vs_category_round,
+    resolution_median_ratio_vs_category_round,
+    resolution_median_delay_level
+  ) %>%
+  arrange(
+    priority_rank,
+    desc(observed_case_count),
+    desc(observed_expected_ratio_by_all_csr_population_round),
+    desc(resolution_median_ratio_vs_category_round)
+  )
+
+safe_write_csv(
+  category_screen_delay_chart_data,
+  output_08_category_screen_delay_chart_data
+)
+
+
+# ---------------------------------------------------------
+# 22B. Select top category x SCREEN combinations
+# ---------------------------------------------------------
+
+top_category_screen_delay_df <- category_screen_delay_chart_data %>%
+  filter(
+    observed_case_count >= min_case_count
+  ) %>%
+  arrange(
+    priority_rank,
+    desc(observed_case_count),
+    desc(observed_expected_ratio_by_all_csr_population_round),
+    desc(resolution_median_ratio_vs_category_round)
+  ) %>%
+  slice_head(n = top_n_category_screen_for_delay_bar)
+
+category_screen_order_for_delay <- top_category_screen_delay_df %>%
+  arrange(
+    desc(priority_rank),
+    observed_case_count
+  ) %>%
+  pull(category_screen_label)
+
+top_category_screen_delay_df <- top_category_screen_delay_df %>%
+  mutate(
+    category_screen_label = factor(
+      category_screen_label,
+      levels = category_screen_order_for_delay
+    )
+  )
+
+
+# ---------------------------------------------------------
+# 22C. Convert SCREEN-specific values to long format
+# ---------------------------------------------------------
+
+screen_delay_long <- top_category_screen_delay_df %>%
+  select(
+    category_screen_label,
+    Customer_Service_Requested,
+    SCREEN,
+    observed_case_count,
+    
+    response_days_average_round,
+    response_days_median_round,
+    resolution_days_average_round,
+    resolution_days_median_round
+  ) %>%
+  pivot_longer(
+    cols = c(
+      response_days_average_round,
+      response_days_median_round,
+      resolution_days_average_round,
+      resolution_days_median_round
+    ),
+    names_to = "metric",
+    values_to = "days"
+  ) %>%
+  mutate(
+    time_type = case_when(
+      metric %in% c(
+        "response_days_average_round",
+        "response_days_median_round"
+      ) ~ "Response",
+      
+      metric %in% c(
+        "resolution_days_average_round",
+        "resolution_days_median_round"
+      ) ~ "Resolution",
+      
+      TRUE ~ "Other"
+    ),
+    
+    statistic = case_when(
+      metric %in% c(
+        "response_days_average_round",
+        "resolution_days_average_round"
+      ) ~ "SCREEN average",
+      
+      metric %in% c(
+        "response_days_median_round",
+        "resolution_days_median_round"
+      ) ~ "SCREEN median",
+      
+      TRUE ~ metric
+    ),
+    
+    time_type = factor(
+      time_type,
+      levels = c("Response", "Resolution")
+    ),
+    
+    statistic = factor(
+      statistic,
+      levels = c(
+        "SCREEN average",
+        "SCREEN median"
+      )
+    )
+  ) %>%
+  filter(!is.na(days))
+
+
+# ---------------------------------------------------------
+# 22D. Overall baseline values
+# ---------------------------------------------------------
+
+overall_response_average <- overall_delay_summary$response_days_average_round[1]
+overall_response_median  <- overall_delay_summary$response_days_median_round[1]
+
+overall_resolution_average <- overall_delay_summary$resolution_days_average_round[1]
+overall_resolution_median  <- overall_delay_summary$resolution_days_median_round[1]
+
+overall_baseline_line_df <- tibble::tibble(
+  time_type = c(
+    "Response",
+    "Response",
+    "Resolution",
+    "Resolution"
+  ),
+  
+  overall_metric = c(
+    "Overall average",
+    "Overall median",
+    "Overall average",
+    "Overall median"
+  ),
+  
+  overall_days = c(
+    overall_response_average,
+    overall_response_median,
+    overall_resolution_average,
+    overall_resolution_median
+  )
+) %>%
+  mutate(
+    time_type = factor(
+      time_type,
+      levels = c("Response", "Resolution")
+    ),
+    
+    overall_metric = factor(
+      overall_metric,
+      levels = c(
+        "Overall average",
+        "Overall median"
+      )
+    )
+  ) %>%
+  filter(!is.na(overall_days))
+
+
+# ---------------------------------------------------------
+# 22E. Draw one total chart
+# ---------------------------------------------------------
+
+category_screen_delay_chart_height <- max(
+  12,
+  length(unique(screen_delay_long$category_screen_label)) * 0.30
+)
+
+p_category_screen_delay_overall_baseline <- ggplot(
+  screen_delay_long,
+  aes(
+    x = days,
+    y = category_screen_label,
+    fill = statistic
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.7
+  ) +
+  geom_vline(
+    data = overall_baseline_line_df,
+    aes(
+      xintercept = overall_days,
+      linetype = overall_metric
+    ),
+    linewidth = 0.8
+  ) +
+  facet_wrap(
+    ~ time_type,
+    scales = "free_x"
+  ) +
+  labs(
+    title = "Response and Resolution Days by CSR Category x EQI SCREEN",
+    subtitle = "Bars show category x SCREEN values. Vertical lines show overall CSR average and median baselines.",
+    x = "Days",
+    y = "CSR Category x EQI SCREEN",
+    fill = "SCREEN metric",
+    linetype = "Overall baseline"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  filename = file.path(
+    figure_folder,
+    "fig_04_category_screen_delay_all_metrics_with_overall_baseline.png"
+  ),
+  plot = p_category_screen_delay_overall_baseline,
+  width = 15,
+  height = category_screen_delay_chart_height,
+  dpi = 300
+)
