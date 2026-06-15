@@ -1,0 +1,417 @@
+# =========================================================
+# 22. Additional bar charts:
+#     Category-level average and median response/resolution days
+#     with overall average and median reference lines
+# =========================================================
+
+# This uses:
+# - category_delay_summary_raw: one row per CSR category
+# - overall_delay_summary: one row for all CSR records
+
+category_delay_plot_df <- category_delay_summary_raw %>%
+  select(
+    Customer_Service_Requested,
+    total_cases_in_category,
+    
+    response_days_average_round,
+    response_days_median_round,
+    
+    resolution_days_average_round,
+    resolution_days_median_round
+  ) %>%
+  mutate(
+    Customer_Service_Requested = as.character(Customer_Service_Requested)
+  )
+
+# Order categories by total cases for readability
+category_order_for_delay_plot <- category_delay_plot_df %>%
+  arrange(total_cases_in_category) %>%
+  pull(Customer_Service_Requested)
+
+category_delay_plot_df <- category_delay_plot_df %>%
+  mutate(
+    Customer_Service_Requested = factor(
+      Customer_Service_Requested,
+      levels = category_order_for_delay_plot
+    )
+  )
+
+# Overall values
+overall_response_average <- overall_delay_summary$response_days_average_round[1]
+overall_response_median  <- overall_delay_summary$response_days_median_round[1]
+
+overall_resolution_average <- overall_delay_summary$resolution_days_average_round[1]
+overall_resolution_median  <- overall_delay_summary$resolution_days_median_round[1]
+
+
+# ---------------------------------------------------------
+# 22A. Combined chart:
+# Response and resolution shown in two panels,
+# each with overall average and median reference lines
+# ---------------------------------------------------------
+
+category_delay_long <- category_delay_plot_df %>%
+  pivot_longer(
+    cols = c(
+      response_days_average_round,
+      response_days_median_round,
+      resolution_days_average_round,
+      resolution_days_median_round
+    ),
+    names_to = "delay_metric",
+    values_to = "days"
+  ) %>%
+  mutate(
+    time_type = case_when(
+      delay_metric %in% c(
+        "response_days_average_round",
+        "response_days_median_round"
+      ) ~ "Response",
+      
+      delay_metric %in% c(
+        "resolution_days_average_round",
+        "resolution_days_median_round"
+      ) ~ "Resolution",
+      
+      TRUE ~ "Other"
+    ),
+    
+    statistic = case_when(
+      delay_metric %in% c(
+        "response_days_average_round",
+        "resolution_days_average_round"
+      ) ~ "Category average",
+      
+      delay_metric %in% c(
+        "response_days_median_round",
+        "resolution_days_median_round"
+      ) ~ "Category median",
+      
+      TRUE ~ delay_metric
+    ),
+    
+    time_type = factor(
+      time_type,
+      levels = c("Response", "Resolution")
+    ),
+    
+    statistic = factor(
+      statistic,
+      levels = c(
+        "Category average",
+        "Category median"
+      )
+    )
+  ) %>%
+  filter(!is.na(days))
+
+overall_line_df <- tibble::tibble(
+  time_type = c(
+    "Response",
+    "Response",
+    "Resolution",
+    "Resolution"
+  ),
+  
+  overall_metric = c(
+    "Overall average",
+    "Overall median",
+    "Overall average",
+    "Overall median"
+  ),
+  
+  overall_days = c(
+    overall_response_average,
+    overall_response_median,
+    overall_resolution_average,
+    overall_resolution_median
+  )
+) %>%
+  mutate(
+    time_type = factor(
+      time_type,
+      levels = c("Response", "Resolution")
+    ),
+    
+    overall_metric = factor(
+      overall_metric,
+      levels = c(
+        "Overall average",
+        "Overall median"
+      )
+    )
+  )
+
+combined_chart_height <- max(
+  10,
+  length(unique(category_delay_long$Customer_Service_Requested)) * 0.35
+)
+
+p_category_all_delay <- ggplot(
+  category_delay_long,
+  aes(
+    x = days,
+    y = Customer_Service_Requested,
+    fill = statistic
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.7
+  ) +
+  geom_vline(
+    data = overall_line_df,
+    aes(
+      xintercept = overall_days,
+      linetype = overall_metric
+    ),
+    linewidth = 0.8
+  ) +
+  facet_wrap(
+    ~ time_type,
+    scales = "free_x"
+  ) +
+  labs(
+    title = "Average and Median Response/Resolution Days by CSR Category",
+    subtitle = "Bars show category-level values. Vertical lines show overall average and median values.",
+    x = "Days",
+    y = "CSR Category",
+    fill = "Category metric",
+    linetype = "Overall reference"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  filename = file.path(
+    figure_folder,
+    "fig_04_category_delay_all_metrics_with_overall_lines.png"
+  ),
+  plot = p_category_all_delay,
+  width = 14,
+  height = combined_chart_height,
+  dpi = 300
+)
+
+
+# ---------------------------------------------------------
+# 22B. Response-only chart:
+# Category average/median response days
+# with overall average/median response lines
+# ---------------------------------------------------------
+
+category_response_long <- category_delay_plot_df %>%
+  select(
+    Customer_Service_Requested,
+    total_cases_in_category,
+    response_days_average_round,
+    response_days_median_round
+  ) %>%
+  pivot_longer(
+    cols = c(
+      response_days_average_round,
+      response_days_median_round
+    ),
+    names_to = "response_metric",
+    values_to = "days"
+  ) %>%
+  mutate(
+    response_metric = case_when(
+      response_metric == "response_days_average_round" ~ "Category average response days",
+      response_metric == "response_days_median_round" ~ "Category median response days",
+      TRUE ~ response_metric
+    ),
+    
+    response_metric = factor(
+      response_metric,
+      levels = c(
+        "Category average response days",
+        "Category median response days"
+      )
+    )
+  ) %>%
+  filter(!is.na(days))
+
+overall_response_line_df <- tibble::tibble(
+  overall_metric = c(
+    "Overall average response days",
+    "Overall median response days"
+  ),
+  
+  overall_days = c(
+    overall_response_average,
+    overall_response_median
+  )
+) %>%
+  mutate(
+    overall_metric = factor(
+      overall_metric,
+      levels = c(
+        "Overall average response days",
+        "Overall median response days"
+      )
+    )
+  )
+
+response_chart_height <- max(
+  10,
+  length(unique(category_response_long$Customer_Service_Requested)) * 0.35
+)
+
+p_category_response_delay <- ggplot(
+  category_response_long,
+  aes(
+    x = days,
+    y = Customer_Service_Requested,
+    fill = response_metric
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.7
+  ) +
+  geom_vline(
+    data = overall_response_line_df,
+    aes(
+      xintercept = overall_days,
+      linetype = overall_metric
+    ),
+    linewidth = 0.8
+  ) +
+  labs(
+    title = "Average and Median Response Days by CSR Category",
+    subtitle = "Bars show category-level response days. Vertical lines show overall response average and median.",
+    x = "Response days",
+    y = "CSR Category",
+    fill = "Category metric",
+    linetype = "Overall reference"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  filename = file.path(
+    figure_folder,
+    "fig_05_category_response_delay_with_overall_lines.png"
+  ),
+  plot = p_category_response_delay,
+  width = 14,
+  height = response_chart_height,
+  dpi = 300
+)
+
+
+# ---------------------------------------------------------
+# 22C. Resolution-only chart:
+# Category average/median resolution days
+# with overall average/median resolution lines
+# ---------------------------------------------------------
+
+category_resolution_long <- category_delay_plot_df %>%
+  select(
+    Customer_Service_Requested,
+    total_cases_in_category,
+    resolution_days_average_round,
+    resolution_days_median_round
+  ) %>%
+  pivot_longer(
+    cols = c(
+      resolution_days_average_round,
+      resolution_days_median_round
+    ),
+    names_to = "resolution_metric",
+    values_to = "days"
+  ) %>%
+  mutate(
+    resolution_metric = case_when(
+      resolution_metric == "resolution_days_average_round" ~ "Category average resolution days",
+      resolution_metric == "resolution_days_median_round" ~ "Category median resolution days",
+      TRUE ~ resolution_metric
+    ),
+    
+    resolution_metric = factor(
+      resolution_metric,
+      levels = c(
+        "Category average resolution days",
+        "Category median resolution days"
+      )
+    )
+  ) %>%
+  filter(!is.na(days))
+
+overall_resolution_line_df <- tibble::tibble(
+  overall_metric = c(
+    "Overall average resolution days",
+    "Overall median resolution days"
+  ),
+  
+  overall_days = c(
+    overall_resolution_average,
+    overall_resolution_median
+  )
+) %>%
+  mutate(
+    overall_metric = factor(
+      overall_metric,
+      levels = c(
+        "Overall average resolution days",
+        "Overall median resolution days"
+      )
+    )
+  )
+
+resolution_chart_height <- max(
+  10,
+  length(unique(category_resolution_long$Customer_Service_Requested)) * 0.35
+)
+
+p_category_resolution_delay <- ggplot(
+  category_resolution_long,
+  aes(
+    x = days,
+    y = Customer_Service_Requested,
+    fill = resolution_metric
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.7
+  ) +
+  geom_vline(
+    data = overall_resolution_line_df,
+    aes(
+      xintercept = overall_days,
+      linetype = overall_metric
+    ),
+    linewidth = 0.8
+  ) +
+  labs(
+    title = "Average and Median Resolution Days by CSR Category",
+    subtitle = "Bars show category-level resolution days. Vertical lines show overall resolution average and median.",
+    x = "Resolution days",
+    y = "CSR Category",
+    fill = "Category metric",
+    linetype = "Overall reference"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+ggsave(
+  filename = file.path(
+    figure_folder,
+    "fig_06_category_resolution_delay_with_overall_lines.png"
+  ),
+  plot = p_category_resolution_delay,
+  width = 14,
+  height = resolution_chart_height,
+  dpi = 300
+)
