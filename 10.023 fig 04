@@ -9,8 +9,17 @@
 # Resolution median days by CSR category x EQI SCREEN
 #
 # Bars = SCREEN-specific median days
-# Colors = relative delay level compared with overall median/average
-# Lines = overall median and overall average
+#
+# Color logic uses overall median as the baseline:
+# Blue   = at or below baseline
+# Gray   = close to baseline
+# Yellow = moderately above baseline
+# Orange = above baseline
+# Red    = strongly above baseline
+#
+# Reference lines:
+# solid  = overall average
+# dashed = overall median
 # =========================================================
 
 category_screen_delay_chart_data <- category_screen_chart_data %>%
@@ -79,24 +88,29 @@ response_chart_data <- category_screen_delay_chart_data %>%
       is.na(response_days_median_round) ~ "Other / missing",
       
       !is.na(overall_response_median) &
+        overall_response_median > 0 &
         response_days_median_round <= overall_response_median ~
-        "At or below overall median",
+        "At or below baseline",
       
-      !is.na(overall_response_average) &
-        response_days_median_round <= overall_response_average ~
-        "Between overall median and average",
+      !is.na(overall_response_median) &
+        overall_response_median > 0 &
+        response_days_median_round <= overall_response_median * 1.25 ~
+        "Close to baseline",
       
-      !is.na(overall_response_average) &
-        response_days_median_round <= overall_response_average * 1.25 ~
-        "Moderately above overall average",
+      !is.na(overall_response_median) &
+        overall_response_median > 0 &
+        response_days_median_round <= overall_response_median * 1.50 ~
+        "Moderately above baseline",
       
-      !is.na(overall_response_average) &
-        response_days_median_round <= overall_response_average * 1.50 ~
-        "Above overall average",
+      !is.na(overall_response_median) &
+        overall_response_median > 0 &
+        response_days_median_round <= overall_response_median * 2.00 ~
+        "Above baseline",
       
-      !is.na(overall_response_average) &
-        response_days_median_round > overall_response_average * 1.50 ~
-        "Much above overall average",
+      !is.na(overall_response_median) &
+        overall_response_median > 0 &
+        response_days_median_round > overall_response_median * 2.00 ~
+        "Strongly above baseline",
       
       TRUE ~ "Other / missing"
     ),
@@ -104,11 +118,11 @@ response_chart_data <- category_screen_delay_chart_data %>%
     response_delay_level_for_plot = factor(
       response_delay_level_for_plot,
       levels = c(
-        "At or below overall median",
-        "Between overall median and average",
-        "Moderately above overall average",
-        "Above overall average",
-        "Much above overall average",
+        "At or below baseline",
+        "Close to baseline",
+        "Moderately above baseline",
+        "Above baseline",
+        "Strongly above baseline",
         "Other / missing"
       )
     ),
@@ -141,6 +155,7 @@ response_baseline_line_df <- tibble::tibble(
     overall_response_average,
     overall_response_median
   ),
+  
   baseline_label = c(
     "Overall response average",
     "Overall response median"
@@ -187,11 +202,11 @@ p_response_median_days <- ggplot(
   ) +
   scale_fill_manual(
     values = c(
-      "At or below overall median" = "#2C7BB6",
-      "Between overall median and average" = "#D9D9D9",
-      "Moderately above overall average" = "#FFFFBF",
-      "Above overall average" = "#FDAE61",
-      "Much above overall average" = "#D7191C",
+      "At or below baseline" = "#2C7BB6",
+      "Close to baseline" = "#D9D9D9",
+      "Moderately above baseline" = "#FFFFBF",
+      "Above baseline" = "#FDAE61",
+      "Strongly above baseline" = "#D7191C",
       "Other / missing" = "white"
     ),
     drop = FALSE
@@ -205,7 +220,7 @@ p_response_median_days <- ggplot(
   ) +
   labs(
     title = "Response Median Days by CSR Category x EQI SCREEN",
-    subtitle = "Sorted by SCREEN-specific median response days. Vertical lines show overall response average and median.",
+    subtitle = "Sorted by SCREEN-specific median response days. Colors compare each value with the overall response median baseline.",
     x = "Median response days",
     y = "CSR Category x EQI SCREEN",
     fill = "Response delay level",
@@ -257,24 +272,29 @@ resolution_chart_data <- category_screen_delay_chart_data %>%
       is.na(resolution_days_median_round) ~ "Other / missing",
       
       !is.na(overall_resolution_median) &
+        overall_resolution_median > 0 &
         resolution_days_median_round <= overall_resolution_median ~
-        "At or below overall median",
+        "At or below baseline",
       
-      !is.na(overall_resolution_average) &
-        resolution_days_median_round <= overall_resolution_average ~
-        "Between overall median and average",
+      !is.na(overall_resolution_median) &
+        overall_resolution_median > 0 &
+        resolution_days_median_round <= overall_resolution_median * 1.25 ~
+        "Close to baseline",
       
-      !is.na(overall_resolution_average) &
-        resolution_days_median_round <= overall_resolution_average * 1.25 ~
-        "Moderately above overall average",
+      !is.na(overall_resolution_median) &
+        overall_resolution_median > 0 &
+        resolution_days_median_round <= overall_resolution_median * 1.50 ~
+        "Moderately above baseline",
       
-      !is.na(overall_resolution_average) &
-        resolution_days_median_round <= overall_resolution_average * 1.50 ~
-        "Above overall average",
+      !is.na(overall_resolution_median) &
+        overall_resolution_median > 0 &
+        resolution_days_median_round <= overall_resolution_median * 2.00 ~
+        "Above baseline",
       
-      !is.na(overall_resolution_average) &
-        resolution_days_median_round > overall_resolution_average * 1.50 ~
-        "Much above overall average",
+      !is.na(overall_resolution_median) &
+        overall_resolution_median > 0 &
+        resolution_days_median_round > overall_resolution_median * 2.00 ~
+        "Strongly above baseline",
       
       TRUE ~ "Other / missing"
     ),
@@ -282,11 +302,11 @@ resolution_chart_data <- category_screen_delay_chart_data %>%
     resolution_delay_level_for_plot = factor(
       resolution_delay_level_for_plot,
       levels = c(
-        "At or below overall median",
-        "Between overall median and average",
-        "Moderately above overall average",
-        "Above overall average",
-        "Much above overall average",
+        "At or below baseline",
+        "Close to baseline",
+        "Moderately above baseline",
+        "Above baseline",
+        "Strongly above baseline",
         "Other / missing"
       )
     ),
@@ -319,6 +339,7 @@ resolution_baseline_line_df <- tibble::tibble(
     overall_resolution_average,
     overall_resolution_median
   ),
+  
   baseline_label = c(
     "Overall resolution average",
     "Overall resolution median"
@@ -365,11 +386,11 @@ p_resolution_median_days <- ggplot(
   ) +
   scale_fill_manual(
     values = c(
-      "At or below overall median" = "#2C7BB6",
-      "Between overall median and average" = "#D9D9D9",
-      "Moderately above overall average" = "#FFFFBF",
-      "Above overall average" = "#FDAE61",
-      "Much above overall average" = "#D7191C",
+      "At or below baseline" = "#2C7BB6",
+      "Close to baseline" = "#D9D9D9",
+      "Moderately above baseline" = "#FFFFBF",
+      "Above baseline" = "#FDAE61",
+      "Strongly above baseline" = "#D7191C",
       "Other / missing" = "white"
     ),
     drop = FALSE
@@ -383,7 +404,7 @@ p_resolution_median_days <- ggplot(
   ) +
   labs(
     title = "Resolution Median Days by CSR Category x EQI SCREEN",
-    subtitle = "Sorted by SCREEN-specific median resolution days. Vertical lines show overall resolution average and median.",
+    subtitle = "Sorted by SCREEN-specific median resolution days. Colors compare each value with the overall resolution median baseline.",
     x = "Median resolution days",
     y = "CSR Category x EQI SCREEN",
     fill = "Resolution delay level",
