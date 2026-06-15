@@ -1,0 +1,1945 @@
+library(sf)
+library(dplyr)
+library(stringr)
+library(readr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(scales)
+
+# =========================================================
+# 1. Inputs
+# =========================================================
+
+gdb_path_points <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
+layer_points    <- "CSR_02_23_2026_Projected"
+
+gdb_path_eqi <- "C:/Users/s160418/OneDrive - California Department of Transportation/Desktop/ESTA/EQI Use Case/Maintenance/Maintenance_CSR/Maintenance_CSR.gdb"
+layer_eqi    <- "EQI_Shapefile_ExportFeatures"
+
+field_request   <- "Customer_Service_Requested"
+field_screen    <- "SCREEN"
+field_pop       <- "POP20"
+field_ur20      <- "UR20"
+
+field_opened    <- "Date_Opened"
+field_responded <- "Date_Responded"
+field_closed    <- "Date_Closed"
+
+eqi_id_field <- NULL
+# eqi_id_field <- "OBJECTID"
+
+output_folder <- "C:/Users/s160418/Desktop/CSR_EQI_Prioritization_Final_Output"
+figure_folder <- file.path(output_folder, "Figures")
+
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+if (!dir.exists(figure_folder)) {
+  dir.create(figure_folder, recursive = TRUE)
+}
+
+# Output tables
+output_01_baseline <- file.path(
+  output_folder,
+  "01_all_csr_population_baseline_by_screen.csv"
+)
+
+output_02_overrep <- file.path(
+  output_folder,
+  "02_category_screen_overrepresentation.csv"
+)
+
+output_03_overrep_only <- file.path(
+  output_folder,
+  "03_category_screen_overrepresented_only.csv"
+)
+
+output_04_overall_delay <- file.path(
+  output_folder,
+  "04_overall_delay_summary_from_raw.csv"
+)
+
+output_05_category_delay <- file.path(
+  output_folder,
+  "05_category_delay_summary_from_raw.csv"
+)
+
+output_06_client_base <- file.path(
+  output_folder,
+  "06_client_base_category_screen_summary.csv"
+)
+
+output_07_category_final <- file.path(
+  output_folder,
+  "07_category_final_summary_for_presentation.csv"
+)
+
+# Thresholds
+min_case_count <- 10
+
+below_expected_threshold <- 0.67
+moderately_elevated_threshold <- 1.25
+elevated_threshold <- 1.50
+strongly_elevated_threshold <- 2.00
+
+faster_than_category_threshold <- 0.80
+moderately_slower_threshold <- 1.25
+slower_threshold <- 1.50
+much_slower_threshold <- 2.00
+
+top_n_categories_for_heatmap <- 30
+
+
+# =========================================================
+# 2. Helper functions
+# =========================================================
+
+safe_write_csv <- function(df, path) {
+  
+  df <- as.data.frame(df)
+  
+  if ("geometry" %in% names(df)) {
+    df$geometry <- NULL
+  }
+  
+  list_cols <- names(df)[sapply(df, is.list)]
+  if (length(list_cols) > 0) {
+    for (col in list_cols) {
+      df[[col]] <- as.character(df[[col]])
+    }
+  }
+  
+  numeric_cols <- names(df)[sapply(df, is.numeric)]
+  if (length(numeric_cols) > 0) {
+    for (col in numeric_cols) {
+      df[[col]][is.infinite(df[[col]]) | is.nan(df[[col]])] <- NA_real_
+    }
+  }
+  
+  readr::write_csv(df, path, na = "")
+  cat("Wrote:", path, "\n")
+}
+
+parse_csr_date <- function(x) {
+  
+  if (inherits(x, "Date")) {
+    return(x)
+  }
+  
+  if (inherits(x, "POSIXct") | inherits(x, "POSIXlt")) {
+    return(as.Date(x))
+  }
+  
+  x_chr <- as.character(x)
+  x_chr <- str_squish(x_chr)
+  x_chr[x_chr == ""] <- NA_character_
+  
+  parsed <- suppressWarnings(as.Date(x_chr))
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(mdy(x_chr))),
+    parsed
+  )
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(ymd(x_chr))),
+    parsed
+  )
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(mdy_hms(x_chr))),
+    parsed
+  )
+  
+  parsed <- if_else(
+    is.na(parsed),
+    suppressWarnings(as.Date(ymd_hms(x_chr))),
+    parsed
+  )
+  
+  parsed
+}
+
+mean_or_na <- function(x) {
+  if (all(is.na(x))) {
+    return(NA_real_)
+  } else {
+    return(mean(x, na.rm = TRUE))
+  }
+}
+
+median_or_na <- function(x) {
+  if (all(is.na(x))) {
+    return(NA_real_)
+  } else {
+    return(median(x, na.rm = TRUE))
+  }
+}
+
+quantile_or_na <- function(x, p) {
+  if (all(is.na(x))) {
+    return(NA_real_)
+  } else {
+    return(as.numeric(quantile(x, probs = p, na.rm = TRUE, names = FALSE)))
+  }
+}
+
+safe_ratio <- function(numerator, denominator) {
+  if_else(
+    !is.na(numerator) & !is.na(denominator) & denominator > 0,
+    numerator / denominator,
+    NA_real_
+  )
+}
+
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & x != ""])
+  if (length(x) == 0) {
+    return("")
+  } else {
+    return(paste(sort(x), collapse = "; "))
+  }
+}
+
+get_first_non_na <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) {
+    return(NA)
+  } else {
+    return(x[1])
+  }
+}
+
+get_representation_level <- function(ratio, case_count) {
+  case_when(
+    is.na(ratio) ~ "No denominator",
+    case_count < min_case_count ~ "Low case count",
+    ratio < below_expected_threshold ~ "Below expected",
+    ratio >= below_expected_threshold & ratio < moderately_elevated_threshold ~ "Close to expected",
+    ratio >= moderately_elevated_threshold & ratio < elevated_threshold ~ "Moderately elevated",
+    ratio >= elevated_threshold & ratio < strongly_elevated_threshold ~ "Elevated",
+    ratio >= strongly_elevated_threshold ~ "Strongly elevated",
+    TRUE ~ "Unclassified"
+  )
+}
+
+get_delay_level <- function(ratio, valid_n) {
+  case_when(
+    is.na(ratio) ~ "No valid category baseline",
+    is.na(valid_n) | valid_n < min_case_count ~ "Low valid time count",
+    ratio < faster_than_category_threshold ~ "Faster than category typical",
+    ratio >= faster_than_category_threshold & ratio < moderately_slower_threshold ~ "Similar to category typical",
+    ratio >= moderately_slower_threshold & ratio < slower_threshold ~ "Moderately slower",
+    ratio >= slower_threshold & ratio < much_slower_threshold ~ "Slower",
+    ratio >= much_slower_threshold ~ "Much slower",
+    TRUE ~ "Unclassified"
+  )
+}
+
+
+# =========================================================
+# 3. Read data
+# =========================================================
+
+cat("\nReading CSR point layer...\n")
+points_sf <- st_read(gdb_path_points, layer = layer_points, quiet = FALSE)
+
+cat("\nReading EQI polygon layer...\n")
+eqi_sf <- st_read(gdb_path_eqi, layer = layer_eqi, quiet = FALSE)
+
+
+# =========================================================
+# 4. Check fields
+# =========================================================
+
+required_point_fields <- c(
+  field_request,
+  field_opened,
+  field_responded,
+  field_closed
+)
+
+missing_point_fields <- setdiff(required_point_fields, names(points_sf))
+
+if (length(missing_point_fields) > 0) {
+  stop(
+    paste0(
+      "Missing point fields:\n",
+      paste(missing_point_fields, collapse = ", "),
+      "\n\nAvailable point fields:\n",
+      paste(names(points_sf), collapse = ", ")
+    )
+  )
+}
+
+required_eqi_fields <- c(
+  field_screen,
+  field_pop,
+  field_ur20
+)
+
+missing_eqi_fields <- setdiff(required_eqi_fields, names(eqi_sf))
+
+if (length(missing_eqi_fields) > 0) {
+  stop(
+    paste0(
+      "Missing EQI fields:\n",
+      paste(missing_eqi_fields, collapse = ", "),
+      "\n\nAvailable EQI fields:\n",
+      paste(names(eqi_sf), collapse = ", ")
+    )
+  )
+}
+
+
+# =========================================================
+# 5. Clean CSR dates and delay from RAW CSR
+#
+# This is used for:
+# - overall delay summary
+# - per-category delay summary
+# - spatial joined analysis
+# =========================================================
+
+points_clean <- points_sf %>%
+  select(
+    all_of(c(
+      field_request,
+      field_opened,
+      field_responded,
+      field_closed
+    ))
+  ) %>%
+  mutate(
+    Customer_Service_Requested = as.character(.data[[field_request]]),
+    Customer_Service_Requested = str_squish(Customer_Service_Requested),
+    Customer_Service_Requested = na_if(Customer_Service_Requested, ""),
+    Customer_Service_Requested = if_else(
+      is.na(Customer_Service_Requested),
+      "NA / Blank",
+      Customer_Service_Requested
+    ),
+    
+    Date_Opened_clean =
+      parse_csr_date(.data[[field_opened]]),
+    
+    Date_Responded_clean =
+      parse_csr_date(.data[[field_responded]]),
+    
+    Date_Closed_clean =
+      parse_csr_date(.data[[field_closed]]),
+    
+    response_days =
+      as.numeric(Date_Responded_clean - Date_Opened_clean),
+    
+    resolution_days =
+      as.numeric(Date_Closed_clean - Date_Opened_clean),
+    
+    response_days = if_else(
+      !is.na(response_days) & response_days >= 0,
+      response_days,
+      NA_real_
+    ),
+    
+    resolution_days = if_else(
+      !is.na(resolution_days) & resolution_days >= 0,
+      resolution_days,
+      NA_real_
+    ),
+    
+    has_valid_response_time =
+      !is.na(response_days),
+    
+    has_valid_resolution_time =
+      !is.na(resolution_days)
+  )
+
+csr_delay_raw_df <- points_clean %>%
+  st_drop_geometry()
+
+
+# =========================================================
+# 6. Overall delay summary from RAW CSR
+# =========================================================
+
+overall_delay_summary <- csr_delay_raw_df %>%
+  summarise(
+    summary_level = "Overall CSR",
+    
+    total_cases = n(),
+    
+    response_time_valid_n =
+      sum(has_valid_response_time, na.rm = TRUE),
+    
+    response_time_missing_n =
+      sum(!has_valid_response_time, na.rm = TRUE),
+    
+    response_time_valid_percent =
+      response_time_valid_n / total_cases,
+    
+    response_days_average =
+      mean_or_na(response_days),
+    
+    response_days_median =
+      median_or_na(response_days),
+    
+    response_days_p75 =
+      quantile_or_na(response_days, 0.75),
+    
+    response_days_p90 =
+      quantile_or_na(response_days, 0.90),
+    
+    resolution_time_valid_n =
+      sum(has_valid_resolution_time, na.rm = TRUE),
+    
+    resolution_time_missing_n =
+      sum(!has_valid_resolution_time, na.rm = TRUE),
+    
+    resolution_time_valid_percent =
+      resolution_time_valid_n / total_cases,
+    
+    resolution_days_average =
+      mean_or_na(resolution_days),
+    
+    resolution_days_median =
+      median_or_na(resolution_days),
+    
+    resolution_days_p75 =
+      quantile_or_na(resolution_days, 0.75),
+    
+    resolution_days_p90 =
+      quantile_or_na(resolution_days, 0.90)
+  ) %>%
+  mutate(
+    response_time_valid_percent_label =
+      paste0(round(response_time_valid_percent * 100, 2), "%"),
+    
+    resolution_time_valid_percent_label =
+      paste0(round(resolution_time_valid_percent * 100, 2), "%"),
+    
+    response_days_average_round =
+      round(response_days_average, 2),
+    
+    response_days_median_round =
+      round(response_days_median, 2),
+    
+    response_days_p75_round =
+      round(response_days_p75, 2),
+    
+    response_days_p90_round =
+      round(response_days_p90, 2),
+    
+    resolution_days_average_round =
+      round(resolution_days_average, 2),
+    
+    resolution_days_median_round =
+      round(resolution_days_median, 2),
+    
+    resolution_days_p75_round =
+      round(resolution_days_p75, 2),
+    
+    resolution_days_p90_round =
+      round(resolution_days_p90, 2)
+  )
+
+
+# =========================================================
+# 7. Per-category delay summary from RAW CSR
+# =========================================================
+
+category_delay_summary_raw <- csr_delay_raw_df %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    total_cases_in_category = n(),
+    
+    response_time_valid_n =
+      sum(has_valid_response_time, na.rm = TRUE),
+    
+    response_time_missing_n =
+      sum(!has_valid_response_time, na.rm = TRUE),
+    
+    response_time_valid_percent =
+      response_time_valid_n / total_cases_in_category,
+    
+    response_days_average =
+      mean_or_na(response_days),
+    
+    response_days_median =
+      median_or_na(response_days),
+    
+    response_days_p75 =
+      quantile_or_na(response_days, 0.75),
+    
+    response_days_p90 =
+      quantile_or_na(response_days, 0.90),
+    
+    resolution_time_valid_n =
+      sum(has_valid_resolution_time, na.rm = TRUE),
+    
+    resolution_time_missing_n =
+      sum(!has_valid_resolution_time, na.rm = TRUE),
+    
+    resolution_time_valid_percent =
+      resolution_time_valid_n / total_cases_in_category,
+    
+    resolution_days_average =
+      mean_or_na(resolution_days),
+    
+    resolution_days_median =
+      median_or_na(resolution_days),
+    
+    resolution_days_p75 =
+      quantile_or_na(resolution_days, 0.75),
+    
+    resolution_days_p90 =
+      quantile_or_na(resolution_days, 0.90),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    response_time_valid_percent_label =
+      paste0(round(response_time_valid_percent * 100, 2), "%"),
+    
+    resolution_time_valid_percent_label =
+      paste0(round(resolution_time_valid_percent * 100, 2), "%"),
+    
+    response_days_average_round =
+      round(response_days_average, 2),
+    
+    response_days_median_round =
+      round(response_days_median, 2),
+    
+    response_days_p75_round =
+      round(response_days_p75, 2),
+    
+    response_days_p90_round =
+      round(response_days_p90, 2),
+    
+    resolution_days_average_round =
+      round(resolution_days_average, 2),
+    
+    resolution_days_median_round =
+      round(resolution_days_median, 2),
+    
+    resolution_days_p75_round =
+      round(resolution_days_p75, 2),
+    
+    resolution_days_p90_round =
+      round(resolution_days_p90, 2)
+  ) %>%
+  arrange(desc(total_cases_in_category))
+
+
+# =========================================================
+# 8. Prepare EQI layer
+# =========================================================
+
+if (st_crs(points_clean) != st_crs(eqi_sf)) {
+  eqi_sf <- st_transform(eqi_sf, st_crs(points_clean))
+}
+
+if (!is.null(eqi_id_field)) {
+  
+  if (!(eqi_id_field %in% names(eqi_sf))) {
+    stop(paste0("eqi_id_field '", eqi_id_field, "' was not found."))
+  }
+  
+  eqi_sf <- eqi_sf %>%
+    mutate(eqi_poly_id = as.character(.data[[eqi_id_field]]))
+  
+} else {
+  
+  eqi_sf <- eqi_sf %>%
+    mutate(eqi_poly_id = as.character(row_number()))
+}
+
+eqi_clean <- eqi_sf %>%
+  select(
+    eqi_poly_id,
+    all_of(c(field_screen, field_pop, field_ur20))
+  ) %>%
+  mutate(
+    SCREEN = as.character(.data[[field_screen]]),
+    SCREEN = str_squish(SCREEN),
+    SCREEN = na_if(SCREEN, ""),
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "NA / Blank",
+      SCREEN
+    ),
+    
+    POP20 = suppressWarnings(as.numeric(.data[[field_pop]])),
+    POP20 = if_else(is.na(POP20), 0, POP20),
+    
+    UR20 = as.character(.data[[field_ur20]]),
+    UR20 = str_squish(UR20),
+    UR20 = str_to_upper(UR20),
+    UR20 = na_if(UR20, ""),
+    UR20 = case_when(
+      UR20 == "U" ~ "Urban",
+      UR20 == "R" ~ "Rural",
+      is.na(UR20) ~ "Unknown",
+      TRUE ~ UR20
+    )
+  )
+
+
+# =========================================================
+# 9. Spatial join CSR to EQI
+# =========================================================
+
+cat("\nRunning spatial join...\n")
+
+joined_sf <- st_join(points_clean, eqi_clean, left = TRUE)
+
+joined_df <- joined_sf %>%
+  st_drop_geometry() %>%
+  mutate(
+    SCREEN = if_else(
+      is.na(SCREEN),
+      "Outside polygon / No match",
+      SCREEN
+    ),
+    
+    eqi_poly_id = if_else(
+      is.na(eqi_poly_id),
+      "No_match",
+      eqi_poly_id
+    ),
+    
+    POP20 = if_else(
+      is.na(POP20),
+      0,
+      POP20
+    ),
+    
+    UR20 = if_else(
+      is.na(UR20),
+      "Unknown",
+      UR20
+    )
+  )
+
+matched_df <- joined_df %>%
+  filter(
+    !is.na(Customer_Service_Requested),
+    !is.na(SCREEN),
+    eqi_poly_id != "No_match",
+    SCREEN != "Outside polygon / No match"
+  )
+
+cat("Matched CSR records:", nrow(matched_df), "\n")
+
+
+# =========================================================
+# 10. All CSR matched-block population baseline by SCREEN
+# =========================================================
+
+all_csr_matched_blocks <- matched_df %>%
+  distinct(
+    eqi_poly_id,
+    SCREEN,
+    POP20
+  )
+
+all_csr_population_baseline_by_screen <- all_csr_matched_blocks %>%
+  group_by(SCREEN) %>%
+  summarise(
+    all_csr_screen_block_count = n_distinct(eqi_poly_id),
+    all_csr_screen_population = sum(POP20, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    all_csr_total_matched_block_count =
+      sum(all_csr_screen_block_count, na.rm = TRUE),
+    
+    all_csr_total_population =
+      sum(all_csr_screen_population, na.rm = TRUE),
+    
+    all_csr_screen_population_share =
+      if_else(
+        all_csr_total_population > 0,
+        all_csr_screen_population / all_csr_total_population,
+        NA_real_
+      ),
+    
+    all_csr_screen_population_share_label =
+      paste0(round(all_csr_screen_population_share * 100, 2), "%")
+  ) %>%
+  arrange(SCREEN)
+
+
+# =========================================================
+# 11. Observed vs expected by category x SCREEN
+# =========================================================
+
+observed_category_screen_raw <- matched_df %>%
+  count(
+    Customer_Service_Requested,
+    SCREEN,
+    name = "observed_case_count"
+  )
+
+all_categories <- observed_category_screen_raw %>%
+  distinct(Customer_Service_Requested)
+
+all_screens <- all_csr_population_baseline_by_screen %>%
+  distinct(SCREEN)
+
+observed_category_screen <- tidyr::crossing(
+  all_categories,
+  all_screens
+) %>%
+  left_join(
+    observed_category_screen_raw,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  mutate(
+    observed_case_count = replace_na(observed_case_count, 0L)
+  ) %>%
+  group_by(Customer_Service_Requested) %>%
+  mutate(
+    total_cases_in_category = sum(observed_case_count),
+    
+    observed_case_share_within_category =
+      if_else(
+        total_cases_in_category > 0,
+        observed_case_count / total_cases_in_category,
+        NA_real_
+      ),
+    
+    observed_case_share_within_category_label =
+      paste0(round(observed_case_share_within_category * 100, 2), "%")
+  ) %>%
+  ungroup()
+
+category_screen_overrepresentation <- observed_category_screen %>%
+  left_join(
+    all_csr_population_baseline_by_screen,
+    by = "SCREEN"
+  ) %>%
+  mutate(
+    expected_cases_by_all_csr_population =
+      total_cases_in_category * all_csr_screen_population_share,
+    
+    observed_expected_ratio_by_all_csr_population =
+      if_else(
+        expected_cases_by_all_csr_population > 0,
+        observed_case_count / expected_cases_by_all_csr_population,
+        NA_real_
+      ),
+    
+    excess_cases_by_all_csr_population =
+      observed_case_count - expected_cases_by_all_csr_population,
+    
+    expected_cases_by_all_csr_population_round =
+      round(expected_cases_by_all_csr_population, 2),
+    
+    excess_cases_by_all_csr_population_round =
+      round(excess_cases_by_all_csr_population, 2),
+    
+    observed_expected_ratio_by_all_csr_population_round =
+      round(observed_expected_ratio_by_all_csr_population, 2),
+    
+    population_representation_level =
+      get_representation_level(
+        observed_expected_ratio_by_all_csr_population,
+        observed_case_count
+      ),
+    
+    population_moderately_or_more_elevated =
+      population_representation_level %in%
+      c("Moderately elevated", "Elevated", "Strongly elevated"),
+    
+    population_clearly_or_more_elevated =
+      population_representation_level %in%
+      c("Elevated", "Strongly elevated"),
+    
+    population_strongly_elevated =
+      population_representation_level == "Strongly elevated",
+    
+    prioritization_flag = case_when(
+      observed_case_count < min_case_count ~
+        "Low case count",
+      
+      population_representation_level == "Strongly elevated" ~
+        "High priority pattern",
+      
+      population_representation_level == "Elevated" ~
+        "Elevated priority pattern",
+      
+      population_representation_level == "Moderately elevated" ~
+        "Moderate priority pattern",
+      
+      population_representation_level == "Below expected" ~
+        "Below expected",
+      
+      population_representation_level == "Close to expected" ~
+        "Close to expected",
+      
+      TRUE ~
+        "Review"
+    )
+  ) %>%
+  arrange(
+    Customer_Service_Requested,
+    desc(population_clearly_or_more_elevated),
+    desc(population_moderately_or_more_elevated),
+    desc(observed_expected_ratio_by_all_csr_population),
+    desc(observed_case_count)
+  )
+
+category_screen_overrepresented_only <- category_screen_overrepresentation %>%
+  filter(
+    observed_case_count >= min_case_count,
+    population_moderately_or_more_elevated == TRUE
+  ) %>%
+  arrange(
+    desc(population_strongly_elevated),
+    desc(population_clearly_or_more_elevated),
+    desc(observed_expected_ratio_by_all_csr_population),
+    desc(observed_case_count)
+  )
+
+
+# =========================================================
+# 12. Category-wide time baseline for matched CSR
+#
+# This is used for SCREEN-specific delay ratios.
+# =========================================================
+
+category_time_baseline <- matched_df %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    category_matched_case_count_for_time = n(),
+    
+    category_response_valid_n =
+      sum(!is.na(response_days)),
+    
+    category_response_days_average =
+      mean_or_na(response_days),
+    
+    category_response_days_median =
+      median_or_na(response_days),
+    
+    category_resolution_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    category_resolution_days_average =
+      mean_or_na(resolution_days),
+    
+    category_resolution_days_median =
+      median_or_na(resolution_days),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    category_response_days_average_round =
+      round(category_response_days_average, 2),
+    
+    category_response_days_median_round =
+      round(category_response_days_median, 2),
+    
+    category_resolution_days_average_round =
+      round(category_resolution_days_average, 2),
+    
+    category_resolution_days_median_round =
+      round(category_resolution_days_median, 2)
+  )
+
+
+# =========================================================
+# 13. Category x SCREEN time summary and methodology ratios
+#
+# Methodology:
+# response median ratio =
+# SCREEN median response days / category-wide median response days
+#
+# resolution median ratio =
+# SCREEN median resolution days / category-wide median resolution days
+# =========================================================
+
+category_screen_time_summary <- matched_df %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN
+  ) %>%
+  summarise(
+    case_count_for_time_summary = n(),
+    
+    response_time_valid_n =
+      sum(!is.na(response_days)),
+    
+    response_days_average =
+      mean_or_na(response_days),
+    
+    response_days_median =
+      median_or_na(response_days),
+    
+    response_days_p75 =
+      quantile_or_na(response_days, 0.75),
+    
+    response_days_p90 =
+      quantile_or_na(response_days, 0.90),
+    
+    response_days_missing_n =
+      sum(is.na(response_days)),
+    
+    resolution_time_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    resolution_days_average =
+      mean_or_na(resolution_days),
+    
+    resolution_days_median =
+      median_or_na(resolution_days),
+    
+    resolution_days_p75 =
+      quantile_or_na(resolution_days, 0.75),
+    
+    resolution_days_p90 =
+      quantile_or_na(resolution_days, 0.90),
+    
+    resolution_days_missing_n =
+      sum(is.na(resolution_days)),
+    
+    .groups = "drop"
+  ) %>%
+  left_join(
+    category_time_baseline,
+    by = "Customer_Service_Requested"
+  ) %>%
+  mutate(
+    response_average_ratio_vs_category =
+      safe_ratio(response_days_average, category_response_days_average),
+    
+    response_median_ratio_vs_category =
+      safe_ratio(response_days_median, category_response_days_median),
+    
+    resolution_average_ratio_vs_category =
+      safe_ratio(resolution_days_average, category_resolution_days_average),
+    
+    resolution_median_ratio_vs_category =
+      safe_ratio(resolution_days_median, category_resolution_days_median),
+    
+    response_average_ratio_vs_category_round =
+      round(response_average_ratio_vs_category, 2),
+    
+    response_median_ratio_vs_category_round =
+      round(response_median_ratio_vs_category, 2),
+    
+    resolution_average_ratio_vs_category_round =
+      round(resolution_average_ratio_vs_category, 2),
+    
+    resolution_median_ratio_vs_category_round =
+      round(resolution_median_ratio_vs_category, 2),
+    
+    response_median_delay_level =
+      get_delay_level(
+        response_median_ratio_vs_category,
+        response_time_valid_n
+      ),
+    
+    response_average_delay_level =
+      get_delay_level(
+        response_average_ratio_vs_category,
+        response_time_valid_n
+      ),
+    
+    resolution_median_delay_level =
+      get_delay_level(
+        resolution_median_ratio_vs_category,
+        resolution_time_valid_n
+      ),
+    
+    resolution_average_delay_level =
+      get_delay_level(
+        resolution_average_ratio_vs_category,
+        resolution_time_valid_n
+      ),
+    
+    response_typical_delay_flag =
+      response_median_ratio_vs_category >= slower_threshold,
+    
+    resolution_typical_delay_flag =
+      resolution_median_ratio_vs_category >= slower_threshold,
+    
+    response_moderate_typical_delay_flag =
+      response_median_ratio_vs_category >= moderately_slower_threshold,
+    
+    resolution_moderate_typical_delay_flag =
+      resolution_median_ratio_vs_category >= moderately_slower_threshold,
+    
+    response_long_tail_delay_flag =
+      response_average_ratio_vs_category >= slower_threshold &
+      response_median_ratio_vs_category < moderately_slower_threshold,
+    
+    resolution_long_tail_delay_flag =
+      resolution_average_ratio_vs_category >= slower_threshold &
+      resolution_median_ratio_vs_category < moderately_slower_threshold,
+    
+    response_days_average_round =
+      round(response_days_average, 2),
+    
+    response_days_median_round =
+      round(response_days_median, 2),
+    
+    response_days_p75_round =
+      round(response_days_p75, 2),
+    
+    response_days_p90_round =
+      round(response_days_p90, 2),
+    
+    resolution_days_average_round =
+      round(resolution_days_average, 2),
+    
+    resolution_days_median_round =
+      round(resolution_days_median, 2),
+    
+    resolution_days_p75_round =
+      round(resolution_days_p75, 2),
+    
+    resolution_days_p90_round =
+      round(resolution_days_p90, 2),
+    
+    delay_interpretation = case_when(
+      response_typical_delay_flag == TRUE &
+        resolution_typical_delay_flag == TRUE ~
+        "Typical response and resolution times are slower than this category's overall pattern.",
+      
+      response_typical_delay_flag == TRUE &
+        resolution_typical_delay_flag != TRUE ~
+        "Typical response time is slower than this category's overall pattern.",
+      
+      resolution_typical_delay_flag == TRUE &
+        response_typical_delay_flag != TRUE ~
+        "Typical resolution time is slower than this category's overall pattern.",
+      
+      response_long_tail_delay_flag == TRUE &
+        resolution_long_tail_delay_flag == TRUE ~
+        "Average response and resolution times are elevated but medians are not; possible long-tail backlog.",
+      
+      response_long_tail_delay_flag == TRUE ~
+        "Average response time is elevated but median is not; possible long-tail response backlog.",
+      
+      resolution_long_tail_delay_flag == TRUE ~
+        "Average resolution time is elevated but median is not; possible long-tail resolution backlog.",
+      
+      response_moderate_typical_delay_flag == TRUE |
+        resolution_moderate_typical_delay_flag == TRUE ~
+        "At least one typical time measure is moderately slower than this category's overall pattern.",
+      
+      TRUE ~
+        "Time performance is similar to category pattern or insufficient data."
+    )
+  )
+
+
+# =========================================================
+# 14. Urban / rural summaries
+# =========================================================
+
+category_screen_ur20_counts <- matched_df %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN
+  ) %>%
+  summarise(
+    urban_case_count =
+      sum(UR20 == "Urban", na.rm = TRUE),
+    
+    rural_case_count =
+      sum(UR20 == "Rural", na.rm = TRUE),
+    
+    unknown_ur20_case_count =
+      sum(UR20 == "Unknown", na.rm = TRUE),
+    
+    total_ur20_case_count = n(),
+    
+    urban_case_share =
+      if_else(total_ur20_case_count > 0, urban_case_count / total_ur20_case_count, NA_real_),
+    
+    rural_case_share =
+      if_else(total_ur20_case_count > 0, rural_case_count / total_ur20_case_count, NA_real_),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    urban_case_share_label =
+      paste0(round(urban_case_share * 100, 2), "%"),
+    
+    rural_case_share_label =
+      paste0(round(rural_case_share * 100, 2), "%")
+  )
+
+urban_time_summary <- matched_df %>%
+  filter(UR20 == "Urban") %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN
+  ) %>%
+  summarise(
+    urban_time_case_count = n(),
+    
+    urban_response_valid_n =
+      sum(!is.na(response_days)),
+    
+    urban_response_days_average =
+      mean_or_na(response_days),
+    
+    urban_response_days_median =
+      median_or_na(response_days),
+    
+    urban_resolution_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    urban_resolution_days_average =
+      mean_or_na(resolution_days),
+    
+    urban_resolution_days_median =
+      median_or_na(resolution_days),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    urban_response_days_average_round =
+      round(urban_response_days_average, 2),
+    
+    urban_response_days_median_round =
+      round(urban_response_days_median, 2),
+    
+    urban_resolution_days_average_round =
+      round(urban_resolution_days_average, 2),
+    
+    urban_resolution_days_median_round =
+      round(urban_resolution_days_median, 2)
+  )
+
+rural_time_summary <- matched_df %>%
+  filter(UR20 == "Rural") %>%
+  group_by(
+    Customer_Service_Requested,
+    SCREEN
+  ) %>%
+  summarise(
+    rural_time_case_count = n(),
+    
+    rural_response_valid_n =
+      sum(!is.na(response_days)),
+    
+    rural_response_days_average =
+      mean_or_na(response_days),
+    
+    rural_response_days_median =
+      median_or_na(response_days),
+    
+    rural_resolution_valid_n =
+      sum(!is.na(resolution_days)),
+    
+    rural_resolution_days_average =
+      mean_or_na(resolution_days),
+    
+    rural_resolution_days_median =
+      median_or_na(resolution_days),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    rural_response_days_average_round =
+      round(rural_response_days_average, 2),
+    
+    rural_response_days_median_round =
+      round(rural_response_days_median, 2),
+    
+    rural_resolution_days_average_round =
+      round(rural_resolution_days_average, 2),
+    
+    rural_resolution_days_median_round =
+      round(rural_resolution_days_median, 2)
+  )
+
+
+# =========================================================
+# 15. Client base table
+#
+# This is the main table for client review.
+# One row = CSR category x EQI SCREEN
+# =========================================================
+
+client_base_category_screen_summary <- category_screen_overrepresentation %>%
+  left_join(
+    category_screen_time_summary,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  left_join(
+    category_screen_ur20_counts,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  left_join(
+    urban_time_summary,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  left_join(
+    rural_time_summary,
+    by = c("Customer_Service_Requested", "SCREEN")
+  ) %>%
+  mutate(
+    response_resolution_note = case_when(
+      response_time_valid_n == 0 & resolution_time_valid_n == 0 ~
+        "No valid response or resolution dates",
+      
+      response_time_valid_n == 0 ~
+        "No valid response dates",
+      
+      resolution_time_valid_n == 0 ~
+        "No valid resolution dates",
+      
+      TRUE ~
+        "Valid time summary"
+    ),
+    
+    priority_review_group = case_when(
+      population_clearly_or_more_elevated == TRUE &
+        (
+          response_typical_delay_flag == TRUE |
+            resolution_typical_delay_flag == TRUE
+        ) ~
+        "High priority: elevated representation + typical delay",
+      
+      population_moderately_or_more_elevated == TRUE &
+        (
+          response_moderate_typical_delay_flag == TRUE |
+            resolution_moderate_typical_delay_flag == TRUE
+        ) ~
+        "Priority review: elevated representation + moderate typical delay",
+      
+      population_moderately_or_more_elevated == TRUE &
+        (
+          response_long_tail_delay_flag == TRUE |
+            resolution_long_tail_delay_flag == TRUE
+        ) ~
+        "Backlog review: elevated representation + long-tail delay",
+      
+      population_clearly_or_more_elevated == TRUE ~
+        "Elevated representation",
+      
+      population_moderately_or_more_elevated == TRUE ~
+        "Moderately elevated representation",
+      
+      response_typical_delay_flag == TRUE |
+        resolution_typical_delay_flag == TRUE ~
+        "Time delay review",
+      
+      response_long_tail_delay_flag == TRUE |
+        resolution_long_tail_delay_flag == TRUE ~
+        "Backlog review",
+      
+      TRUE ~
+        "General monitoring"
+    )
+  ) %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    
+    observed_case_count,
+    total_cases_in_category,
+    observed_case_share_within_category_label,
+    
+    all_csr_screen_population,
+    all_csr_total_population,
+    all_csr_screen_population_share_label,
+    
+    expected_cases_by_all_csr_population_round,
+    excess_cases_by_all_csr_population_round,
+    observed_expected_ratio_by_all_csr_population_round,
+    population_representation_level,
+    prioritization_flag,
+    
+    category_response_valid_n,
+    category_response_days_average_round,
+    category_response_days_median_round,
+    
+    response_time_valid_n,
+    response_days_average_round,
+    response_days_median_round,
+    response_days_p75_round,
+    response_days_p90_round,
+    response_average_ratio_vs_category_round,
+    response_median_ratio_vs_category_round,
+    response_average_delay_level,
+    response_median_delay_level,
+    response_long_tail_delay_flag,
+    
+    category_resolution_valid_n,
+    category_resolution_days_average_round,
+    category_resolution_days_median_round,
+    
+    resolution_time_valid_n,
+    resolution_days_average_round,
+    resolution_days_median_round,
+    resolution_days_p75_round,
+    resolution_days_p90_round,
+    resolution_average_ratio_vs_category_round,
+    resolution_median_ratio_vs_category_round,
+    resolution_average_delay_level,
+    resolution_median_delay_level,
+    resolution_long_tail_delay_flag,
+    
+    delay_interpretation,
+    response_resolution_note,
+    
+    urban_case_count,
+    rural_case_count,
+    unknown_ur20_case_count,
+    urban_case_share_label,
+    rural_case_share_label,
+    
+    urban_response_valid_n,
+    urban_response_days_average_round,
+    urban_response_days_median_round,
+    urban_resolution_valid_n,
+    urban_resolution_days_average_round,
+    urban_resolution_days_median_round,
+    
+    rural_response_valid_n,
+    rural_response_days_average_round,
+    rural_response_days_median_round,
+    rural_resolution_valid_n,
+    rural_resolution_days_average_round,
+    rural_resolution_days_median_round,
+    
+    priority_review_group
+  ) %>%
+  arrange(
+    desc(priority_review_group == "High priority: elevated representation + typical delay"),
+    desc(priority_review_group == "Priority review: elevated representation + moderate typical delay"),
+    desc(priority_review_group == "Backlog review: elevated representation + long-tail delay"),
+    desc(population_representation_level == "Strongly elevated"),
+    desc(population_representation_level == "Elevated"),
+    desc(population_representation_level == "Moderately elevated"),
+    desc(observed_expected_ratio_by_all_csr_population_round),
+    desc(response_median_ratio_vs_category_round),
+    desc(resolution_median_ratio_vs_category_round),
+    Customer_Service_Requested,
+    SCREEN
+  )
+
+
+# =========================================================
+# 16. Category final summary for presentation
+# =========================================================
+
+category_final_summary <- client_base_category_screen_summary %>%
+  group_by(Customer_Service_Requested) %>%
+  summarise(
+    total_cases_in_category =
+      max(total_cases_in_category, na.rm = TRUE),
+    
+    number_of_screen_groups_with_cases =
+      sum(observed_case_count > 0, na.rm = TRUE),
+    
+    screen_groups_with_cases =
+      collapse_unique(SCREEN[observed_case_count > 0]),
+    
+    category_response_valid_n =
+      get_first_non_na(category_response_valid_n),
+    
+    category_response_days_average =
+      get_first_non_na(category_response_days_average_round),
+    
+    category_response_days_median =
+      get_first_non_na(category_response_days_median_round),
+    
+    category_resolution_valid_n =
+      get_first_non_na(category_resolution_valid_n),
+    
+    category_resolution_days_average =
+      get_first_non_na(category_resolution_days_average_round),
+    
+    category_resolution_days_median =
+      get_first_non_na(category_resolution_days_median_round),
+    
+    number_of_moderately_or_more_elevated_screen_groups =
+      sum(
+        observed_case_count >= min_case_count &
+          population_representation_level %in%
+          c("Moderately elevated", "Elevated", "Strongly elevated"),
+        na.rm = TRUE
+      ),
+    
+    elevated_screen_groups =
+      collapse_unique(
+        SCREEN[
+          observed_case_count >= min_case_count &
+            population_representation_level %in%
+            c("Moderately elevated", "Elevated", "Strongly elevated")
+        ]
+      ),
+    
+    number_of_priority_screen_groups =
+      sum(
+        priority_review_group %in% c(
+          "High priority: elevated representation + typical delay",
+          "Priority review: elevated representation + moderate typical delay",
+          "Backlog review: elevated representation + long-tail delay"
+        ),
+        na.rm = TRUE
+      ),
+    
+    priority_screen_groups =
+      collapse_unique(
+        SCREEN[
+          priority_review_group %in% c(
+            "High priority: elevated representation + typical delay",
+            "Priority review: elevated representation + moderate typical delay",
+            "Backlog review: elevated representation + long-tail delay"
+          )
+        ]
+      ),
+    
+    top_overrepresented_screen =
+      SCREEN[
+        which.max(
+          replace_na(observed_expected_ratio_by_all_csr_population_round, -Inf)
+        )
+      ],
+    
+    max_observed_expected_ratio_population =
+      max(observed_expected_ratio_by_all_csr_population_round, na.rm = TRUE),
+    
+    slowest_response_screen =
+      SCREEN[
+        which.max(
+          replace_na(response_median_ratio_vs_category_round, -Inf)
+        )
+      ],
+    
+    max_response_median_ratio_vs_category =
+      max(response_median_ratio_vs_category_round, na.rm = TRUE),
+    
+    slowest_resolution_screen =
+      SCREEN[
+        which.max(
+          replace_na(resolution_median_ratio_vs_category_round, -Inf)
+        )
+      ],
+    
+    max_resolution_median_ratio_vs_category =
+      max(resolution_median_ratio_vs_category_round, na.rm = TRUE),
+    
+    total_urban_cases =
+      sum(urban_case_count, na.rm = TRUE),
+    
+    total_rural_cases =
+      sum(rural_case_count, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    max_observed_expected_ratio_population =
+      if_else(is.infinite(max_observed_expected_ratio_population), NA_real_, max_observed_expected_ratio_population),
+    
+    max_response_median_ratio_vs_category =
+      if_else(is.infinite(max_response_median_ratio_vs_category), NA_real_, max_response_median_ratio_vs_category),
+    
+    max_resolution_median_ratio_vs_category =
+      if_else(is.infinite(max_resolution_median_ratio_vs_category), NA_real_, max_resolution_median_ratio_vs_category),
+    
+    category_summary_interpretation = case_when(
+      number_of_priority_screen_groups > 0 ~
+        "This category has at least one SCREEN group with elevated representation and slower typical response or resolution time.",
+      
+      number_of_moderately_or_more_elevated_screen_groups > 0 ~
+        "This category has at least one SCREEN group that is moderately or clearly overrepresented.",
+      
+      TRUE ~
+        "No major overrepresentation or delay pattern was flagged."
+    )
+  ) %>%
+  arrange(
+    desc(number_of_priority_screen_groups),
+    desc(number_of_moderately_or_more_elevated_screen_groups),
+    desc(max_observed_expected_ratio_population),
+    desc(total_cases_in_category)
+  )
+
+
+# =========================================================
+# 17. Export tables
+# =========================================================
+
+safe_write_csv(
+  all_csr_population_baseline_by_screen,
+  output_01_baseline
+)
+
+safe_write_csv(
+  category_screen_overrepresentation,
+  output_02_overrep
+)
+
+safe_write_csv(
+  category_screen_overrepresented_only,
+  output_03_overrep_only
+)
+
+safe_write_csv(
+  overall_delay_summary,
+  output_04_overall_delay
+)
+
+safe_write_csv(
+  category_delay_summary_raw,
+  output_05_category_delay
+)
+
+safe_write_csv(
+  client_base_category_screen_summary,
+  output_06_client_base
+)
+
+safe_write_csv(
+  category_final_summary,
+  output_07_category_final
+)
+
+
+# =========================================================
+# 18. Prepare data for heatmaps
+# =========================================================
+
+top_categories <- client_base_category_screen_summary %>%
+  distinct(Customer_Service_Requested, total_cases_in_category) %>%
+  arrange(desc(total_cases_in_category)) %>%
+  slice_head(n = top_n_categories_for_heatmap) %>%
+  pull(Customer_Service_Requested)
+
+category_order <- client_base_category_screen_summary %>%
+  distinct(Customer_Service_Requested, total_cases_in_category) %>%
+  arrange(total_cases_in_category) %>%
+  pull(Customer_Service_Requested)
+
+plot_df <- client_base_category_screen_summary %>%
+  filter(
+    Customer_Service_Requested %in% top_categories,
+    observed_case_count > 0
+  ) %>%
+  mutate(
+    Customer_Service_Requested = factor(
+      Customer_Service_Requested,
+      levels = category_order
+    )
+  )
+
+
+# =========================================================
+# 19. Figure 1: Overrepresentation heatmap
+# =========================================================
+
+plot_df_overrep <- plot_df %>%
+  mutate(
+    overrep_level_for_plot = case_when(
+      population_representation_level == "Below expected" ~ "Below expected",
+      population_representation_level == "Close to expected" ~ "Close to expected",
+      population_representation_level == "Moderately elevated" ~ "Moderately elevated",
+      population_representation_level == "Elevated" ~ "Elevated",
+      population_representation_level == "Strongly elevated" ~ "Strongly elevated",
+      population_representation_level == "Low case count" ~ "Low case count",
+      TRUE ~ "Other / missing"
+    ),
+    
+    overrep_level_for_plot = factor(
+      overrep_level_for_plot,
+      levels = c(
+        "Below expected",
+        "Close to expected",
+        "Moderately elevated",
+        "Elevated",
+        "Strongly elevated",
+        "Low case count",
+        "Other / missing"
+      )
+    ),
+    
+    overrep_ratio_label =
+      if_else(
+        is.na(observed_expected_ratio_by_all_csr_population_round),
+        "",
+        sprintf("%.2f", observed_expected_ratio_by_all_csr_population_round)
+      )
+  )
+
+p1 <- ggplot(
+  plot_df_overrep,
+  aes(
+    x = SCREEN,
+    y = Customer_Service_Requested,
+    fill = overrep_level_for_plot
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.35) +
+  geom_text(
+    aes(label = overrep_ratio_label),
+    size = 2.4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Below expected" = "#2C7BB6",
+      "Close to expected" = "#D9D9D9",
+      "Moderately elevated" = "#FFFFBF",
+      "Elevated" = "#FDAE61",
+      "Strongly elevated" = "#D7191C",
+      "Low case count" = "#F0F0F0",
+      "Other / missing" = "white"
+    ),
+    drop = FALSE
+  ) +
+  labs(
+    title = "Observed-to-Expected Ratio by CSR Category and EQI SCREEN",
+    subtitle = "Color shows overrepresentation level; text shows observed-to-expected ratio.",
+    x = "EQI SCREEN",
+    y = "CSR Category",
+    fill = "Representation Level"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+ggsave(
+  filename = file.path(figure_folder, "fig_01_overrepresentation_heatmap.png"),
+  plot = p1,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# =========================================================
+# 20. Figure 2: Response median ratio heatmap
+#
+# This follows the methodology definition exactly:
+# SCREEN-specific median response days /
+# category-wide median response days
+# =========================================================
+
+plot_df_response <- plot_df %>%
+  mutate(
+    response_median_ratio_methodology = if_else(
+      !is.na(response_days_median_round) &
+        !is.na(category_response_days_median_round) &
+        category_response_days_median_round > 0,
+      response_days_median_round / category_response_days_median_round,
+      NA_real_
+    ),
+    
+    response_level_for_plot = case_when(
+      is.na(response_median_ratio_methodology) ~
+        "No valid category baseline",
+      
+      response_time_valid_n < min_case_count ~
+        "Low valid time count",
+      
+      response_median_ratio_methodology < 0.80 ~
+        "Faster than category typical",
+      
+      response_median_ratio_methodology >= 0.80 &
+        response_median_ratio_methodology < 1.25 ~
+        "Similar to category typical",
+      
+      response_median_ratio_methodology >= 1.25 &
+        response_median_ratio_methodology < 1.50 ~
+        "Moderately slower",
+      
+      response_median_ratio_methodology >= 1.50 &
+        response_median_ratio_methodology < 2.00 ~
+        "Slower",
+      
+      response_median_ratio_methodology >= 2.00 ~
+        "Much slower",
+      
+      TRUE ~ "Other / missing"
+    ),
+    
+    response_level_for_plot = factor(
+      response_level_for_plot,
+      levels = c(
+        "Faster than category typical",
+        "Similar to category typical",
+        "Moderately slower",
+        "Slower",
+        "Much slower",
+        "Low valid time count",
+        "No valid category baseline",
+        "Other / missing"
+      )
+    ),
+    
+    response_ratio_label = if_else(
+      is.na(response_median_ratio_methodology),
+      "",
+      sprintf("%.2f", response_median_ratio_methodology)
+    )
+  )
+
+p2 <- ggplot(
+  plot_df_response,
+  aes(
+    x = SCREEN,
+    y = Customer_Service_Requested,
+    fill = response_level_for_plot
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.35) +
+  geom_text(
+    aes(label = response_ratio_label),
+    size = 2.4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Faster than category typical" = "#2C7BB6",
+      "Similar to category typical" = "#D9D9D9",
+      "Moderately slower" = "#FFFFBF",
+      "Slower" = "#FDAE61",
+      "Much slower" = "#D7191C",
+      "Low valid time count" = "#F0F0F0",
+      "No valid category baseline" = "#BDBDBD",
+      "Other / missing" = "white"
+    ),
+    drop = FALSE
+  ) +
+  labs(
+    title = "Median Response Time Ratio by CSR Category and EQI SCREEN",
+    subtitle = "Ratio = SCREEN-specific median response days divided by category-wide median response days.",
+    x = "EQI SCREEN",
+    y = "CSR Category",
+    fill = "Response Median Delay Level"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+ggsave(
+  filename = file.path(figure_folder, "fig_02_response_median_ratio_heatmap.png"),
+  plot = p2,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# =========================================================
+# 21. Figure 3: Resolution median ratio heatmap
+#
+# This follows the methodology definition exactly:
+# SCREEN-specific median resolution days /
+# category-wide median resolution days
+# =========================================================
+
+plot_df_resolution <- plot_df %>%
+  mutate(
+    resolution_median_ratio_methodology = if_else(
+      !is.na(resolution_days_median_round) &
+        !is.na(category_resolution_days_median_round) &
+        category_resolution_days_median_round > 0,
+      resolution_days_median_round / category_resolution_days_median_round,
+      NA_real_
+    ),
+    
+    resolution_level_for_plot = case_when(
+      is.na(resolution_median_ratio_methodology) ~
+        "No valid category baseline",
+      
+      resolution_time_valid_n < min_case_count ~
+        "Low valid time count",
+      
+      resolution_median_ratio_methodology < 0.80 ~
+        "Faster than category typical",
+      
+      resolution_median_ratio_methodology >= 0.80 &
+        resolution_median_ratio_methodology < 1.25 ~
+        "Similar to category typical",
+      
+      resolution_median_ratio_methodology >= 1.25 &
+        resolution_median_ratio_methodology < 1.50 ~
+        "Moderately slower",
+      
+      resolution_median_ratio_methodology >= 1.50 &
+        resolution_median_ratio_methodology < 2.00 ~
+        "Slower",
+      
+      resolution_median_ratio_methodology >= 2.00 ~
+        "Much slower",
+      
+      TRUE ~ "Other / missing"
+    ),
+    
+    resolution_level_for_plot = factor(
+      resolution_level_for_plot,
+      levels = c(
+        "Faster than category typical",
+        "Similar to category typical",
+        "Moderately slower",
+        "Slower",
+        "Much slower",
+        "Low valid time count",
+        "No valid category baseline",
+        "Other / missing"
+      )
+    ),
+    
+    resolution_ratio_label = if_else(
+      is.na(resolution_median_ratio_methodology),
+      "",
+      sprintf("%.2f", resolution_median_ratio_methodology)
+    )
+  )
+
+p3 <- ggplot(
+  plot_df_resolution,
+  aes(
+    x = SCREEN,
+    y = Customer_Service_Requested,
+    fill = resolution_level_for_plot
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.35) +
+  geom_text(
+    aes(label = resolution_ratio_label),
+    size = 2.4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Faster than category typical" = "#2C7BB6",
+      "Similar to category typical" = "#D9D9D9",
+      "Moderately slower" = "#FFFFBF",
+      "Slower" = "#FDAE61",
+      "Much slower" = "#D7191C",
+      "Low valid time count" = "#F0F0F0",
+      "No valid category baseline" = "#BDBDBD",
+      "Other / missing" = "white"
+    ),
+    drop = FALSE
+  ) +
+  labs(
+    title = "Median Resolution Time Ratio by CSR Category and EQI SCREEN",
+    subtitle = "Ratio = SCREEN-specific median resolution days divided by category-wide median resolution days.",
+    x = "EQI SCREEN",
+    y = "CSR Category",
+    fill = "Resolution Median Delay Level"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+ggsave(
+  filename = file.path(figure_folder, "fig_03_resolution_median_ratio_heatmap.png"),
+  plot = p3,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# =========================================================
+# 22. Figure 4: Priority bubble plot
+# =========================================================
+
+bubble_df <- client_base_category_screen_summary %>%
+  filter(
+    observed_case_count >= min_case_count,
+    !is.na(observed_expected_ratio_by_all_csr_population_round)
+  ) %>%
+  mutate(
+    max_median_delay_ratio = pmax(
+      response_median_ratio_vs_category_round,
+      resolution_median_ratio_vs_category_round,
+      na.rm = TRUE
+    ),
+    
+    max_median_delay_ratio = if_else(
+      is.infinite(max_median_delay_ratio),
+      NA_real_,
+      max_median_delay_ratio
+    ),
+    
+    label_text = if_else(
+      priority_review_group %in% c(
+        "High priority: elevated representation + typical delay",
+        "Priority review: elevated representation + moderate typical delay",
+        "Backlog review: elevated representation + long-tail delay"
+      ),
+      paste0(Customer_Service_Requested, "\n", SCREEN),
+      ""
+    )
+  ) %>%
+  filter(
+    !is.na(max_median_delay_ratio)
+  )
+
+p4 <- ggplot(
+  bubble_df,
+  aes(
+    x = observed_expected_ratio_by_all_csr_population_round,
+    y = max_median_delay_ratio,
+    size = observed_case_count
+  )
+) +
+  geom_point(alpha = 0.65) +
+  geom_vline(xintercept = 1.25, linetype = "dashed") +
+  geom_vline(xintercept = 1.50, linetype = "dashed") +
+  geom_hline(yintercept = 1.25, linetype = "dashed") +
+  geom_hline(yintercept = 1.50, linetype = "dashed") +
+  geom_text(
+    aes(label = label_text),
+    size = 2.5,
+    vjust = -0.7,
+    check_overlap = TRUE
+  ) +
+  labs(
+    title = "CSR Prioritization Bubble Plot",
+    subtitle = "Higher right = more overrepresented; higher up = slower response/resolution relative to category",
+    x = "Observed-to-Expected Ratio, Population Baseline",
+    y = "Max Median Delay Ratio vs Category",
+    size = "Observed Cases"
+  ) +
+  theme_minimal()
+
+ggsave(
+  filename = file.path(figure_folder, "fig_04_priority_bubble_plot.png"),
+  plot = p4,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+
+# =========================================================
+# 23. Done
+# =========================================================
+
+cat("\nDone. Final tables saved to:\n")
+cat(output_folder, "\n")
+
+cat("\nFigures saved to:\n")
+cat(figure_folder, "\n")
+
+cat("\nMain client table:\n")
+cat(output_06_client_base, "\n")
+
+cat("\nOverall delay summary:\n")
+cat(output_04_overall_delay, "\n")
+
+cat("\nCategory delay summary:\n")
+cat(output_05_category_delay, "\n")
