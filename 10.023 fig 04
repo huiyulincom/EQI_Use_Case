@@ -1,4 +1,71 @@
 # =========================================================
+# 22. Category x SCREEN total charts
+#
+# Fig 04:
+# Category x SCREEN response/resolution days
+# with overall average/median baseline.
+#
+# Fig 05:
+# Category x SCREEN overrepresentation ratio.
+# =========================================================
+
+output_08_category_screen_delay_chart_data <- file.path(
+  output_folder,
+  "08_category_screen_delay_chart_data.csv"
+)
+
+output_09_category_screen_overrep_chart_data <- file.path(
+  output_folder,
+  "09_category_screen_overrepresentation_chart_data.csv"
+)
+
+top_n_category_screen_for_delay_bar <- 60
+top_n_category_screen_for_overrep_bar <- 60
+
+
+# ---------------------------------------------------------
+# 22A. Shared category x SCREEN chart data
+# ---------------------------------------------------------
+
+category_screen_chart_data <- client_base_category_screen_summary %>%
+  filter(
+    observed_case_count > 0
+  ) %>%
+  mutate(
+    category_screen_label = paste0(
+      Customer_Service_Requested,
+      " | SCREEN ",
+      SCREEN,
+      " | n=",
+      observed_case_count
+    ),
+    
+    priority_rank = case_when(
+      priority_review_group == "High priority: elevated representation + slower resolution" ~ 1,
+      priority_review_group == "Priority review: elevated representation + moderate resolution delay" ~ 2,
+      priority_review_group == "Backlog review: elevated representation + long-tail resolution delay" ~ 3,
+      priority_review_group == "Elevated representation" ~ 4,
+      priority_review_group == "Moderately elevated representation" ~ 5,
+      priority_review_group == "Resolution delay review" ~ 6,
+      priority_review_group == "Resolution backlog review" ~ 7,
+      TRUE ~ 8
+    ),
+    
+    sort_overrep_ratio = if_else(
+      is.na(observed_expected_ratio_by_all_csr_population_round),
+      -Inf,
+      observed_expected_ratio_by_all_csr_population_round
+    ),
+    
+    sort_resolution_ratio = if_else(
+      is.na(resolution_median_ratio_vs_category_round),
+      -Inf,
+      resolution_median_ratio_vs_category_round
+    )
+  )
+
+
+# =========================================================
 # 23. Fig 04:
 # Category x SCREEN delay days chart with OVERALL baseline
 #
@@ -23,19 +90,6 @@
 category_screen_delay_chart_data <- category_screen_chart_data %>%
   filter(
     observed_case_count >= min_case_count
-  ) %>%
-  mutate(
-    sort_resolution_ratio = if_else(
-      is.na(resolution_median_ratio_vs_category_round),
-      -Inf,
-      resolution_median_ratio_vs_category_round
-    ),
-    
-    sort_overrep_ratio = if_else(
-      is.na(observed_expected_ratio_by_all_csr_population_round),
-      -Inf,
-      observed_expected_ratio_by_all_csr_population_round
-    )
   ) %>%
   select(
     Customer_Service_Requested,
@@ -80,9 +134,6 @@ safe_write_csv(
   output_08_category_screen_delay_chart_data
 )
 
-# For horizontal bar charts:
-# factor levels appear from bottom to top.
-# Reverse the arranged order so highest-ranked rows appear at the top.
 category_screen_delay_chart_data <- category_screen_delay_chart_data %>%
   mutate(
     category_screen_label = factor(
@@ -90,11 +141,6 @@ category_screen_delay_chart_data <- category_screen_delay_chart_data %>%
       levels = rev(category_screen_label)
     )
   )
-
-
-# ---------------------------------------------------------
-# Convert SCREEN-specific delay values to long format
-# ---------------------------------------------------------
 
 screen_delay_long <- category_screen_delay_chart_data %>%
   select(
@@ -163,10 +209,7 @@ screen_delay_long <- category_screen_delay_chart_data %>%
   filter(!is.na(days))
 
 
-# ---------------------------------------------------------
 # Overall baseline values
-# ---------------------------------------------------------
-
 overall_response_average <- overall_delay_summary$response_days_average_round[1]
 overall_response_median  <- overall_delay_summary$response_days_median_round[1]
 
@@ -211,10 +254,6 @@ overall_baseline_line_df <- tibble::tibble(
   ) %>%
   filter(!is.na(overall_days))
 
-
-# ---------------------------------------------------------
-# Draw Fig 04
-# ---------------------------------------------------------
 
 category_screen_delay_chart_height <- max(
   12,
@@ -279,5 +318,163 @@ ggsave(
   plot = p_category_screen_delay_overall_baseline,
   width = 15,
   height = category_screen_delay_chart_height,
+  dpi = 300
+)
+
+
+# =========================================================
+# 24. Fig 05:
+# Category x SCREEN overrepresentation ratio chart
+#
+# Bar = observed / expected ratio
+# Baseline = 1.00 expected level
+#
+# Colors already show representation level.
+# =========================================================
+
+category_screen_overrep_chart_data <- category_screen_chart_data %>%
+  filter(
+    observed_case_count >= min_case_count,
+    !is.na(observed_expected_ratio_by_all_csr_population_round)
+  ) %>%
+  mutate(
+    overrep_level_for_plot = case_when(
+      population_representation_level == "Below expected" ~ "Below expected",
+      population_representation_level == "Close to expected" ~ "Close to expected",
+      population_representation_level == "Moderately elevated" ~ "Moderately elevated",
+      population_representation_level == "Elevated" ~ "Elevated",
+      population_representation_level == "Strongly elevated" ~ "Strongly elevated",
+      population_representation_level == "Low case count" ~ "Low case count",
+      TRUE ~ "Other / missing"
+    ),
+    
+    overrep_level_for_plot = factor(
+      overrep_level_for_plot,
+      levels = c(
+        "Below expected",
+        "Close to expected",
+        "Moderately elevated",
+        "Elevated",
+        "Strongly elevated",
+        "Low case count",
+        "Other / missing"
+      )
+    )
+  ) %>%
+  select(
+    Customer_Service_Requested,
+    SCREEN,
+    category_screen_label,
+    
+    observed_case_count,
+    total_cases_in_category,
+    priority_review_group,
+    priority_rank,
+    
+    population_representation_level,
+    overrep_level_for_plot,
+    
+    expected_cases_by_all_csr_population_round,
+    observed_expected_ratio_by_all_csr_population_round,
+    excess_cases_by_all_csr_population_round,
+    
+    resolution_median_ratio_vs_category_round,
+    resolution_median_delay_level,
+    
+    sort_overrep_ratio,
+    sort_resolution_ratio
+  ) %>%
+  arrange(
+    desc(sort_overrep_ratio),
+    desc(sort_resolution_ratio),
+    desc(observed_case_count)
+  ) %>%
+  slice_head(n = top_n_category_screen_for_overrep_bar)
+
+safe_write_csv(
+  category_screen_overrep_chart_data,
+  output_09_category_screen_overrep_chart_data
+)
+
+category_screen_overrep_chart_data <- category_screen_overrep_chart_data %>%
+  mutate(
+    category_screen_label = factor(
+      category_screen_label,
+      levels = rev(category_screen_label)
+    ),
+    
+    ratio_label = if_else(
+      is.na(observed_expected_ratio_by_all_csr_population_round),
+      "",
+      sprintf("%.2f", observed_expected_ratio_by_all_csr_population_round)
+    )
+  )
+
+overrep_chart_height <- max(
+  12,
+  length(unique(category_screen_overrep_chart_data$category_screen_label)) * 0.30
+)
+
+p_category_screen_overrep_ratio <- ggplot(
+  category_screen_overrep_chart_data,
+  aes(
+    x = observed_expected_ratio_by_all_csr_population_round,
+    y = category_screen_label,
+    fill = overrep_level_for_plot
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_vline(
+    xintercept = 1,
+    linetype = "solid",
+    linewidth = 0.8
+  ) +
+  geom_text(
+    aes(label = ratio_label),
+    hjust = -0.15,
+    size = 3
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Below expected" = "#2C7BB6",
+      "Close to expected" = "#D9D9D9",
+      "Moderately elevated" = "#FFFFBF",
+      "Elevated" = "#FDAE61",
+      "Strongly elevated" = "#D7191C",
+      "Low case count" = "#F0F0F0",
+      "Other / missing" = "white"
+    ),
+    drop = FALSE
+  ) +
+  labs(
+    title = "Overrepresentation Ratio by CSR Category x EQI SCREEN",
+    subtitle = "Bar shows observed-to-expected ratio. Vertical line at 1.00 indicates expected level based on the population baseline.",
+    x = "Observed-to-expected ratio",
+    y = "CSR Category x EQI SCREEN",
+    fill = "Representation level"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  ) +
+  coord_cartesian(
+    xlim = c(
+      0,
+      max(
+        category_screen_overrep_chart_data$observed_expected_ratio_by_all_csr_population_round,
+        na.rm = TRUE
+      ) * 1.15
+    )
+  )
+
+ggsave(
+  filename = file.path(
+    figure_folder,
+    "fig_05_category_screen_overrepresentation_ratio_sorted.png"
+  ),
+  plot = p_category_screen_overrep_ratio,
+  width = 15,
+  height = overrep_chart_height,
   dpi = 300
 )
