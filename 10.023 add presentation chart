@@ -1,104 +1,58 @@
 # =========================================================
-# 23. Overall SCREEN-level overrepresentation
+# 23. Per-category overrepresentation charts
 #
-# This combines all CSR categories together.
+# One chart per CSR category.
 #
 # Baseline:
-# population distribution of all CSR-matched EQI blocks.
+# Population distribution of all CSR-matched EQI blocks.
 #
-# Question:
-# Are total CSR cases disproportionately concentrated
-# in certain EQI SCREEN groups compared with population?
+# For each category:
+# Expected cases in SCREEN =
+# total cases in category * all_csr_screen_population_share
 # =========================================================
 
-output_08_overall_screen_overrep <- file.path(
-  output_folder,
-  "08_overall_screen_overrepresentation.csv"
+category_overrep_figure_folder <- file.path(
+  figure_folder,
+  "Per_Category_Overrepresentation_Figures"
 )
 
-overall_screen_observed <- matched_df %>%
-  count(
-    SCREEN,
-    name = "overall_observed_case_count"
-  ) %>%
+if (!dir.exists(category_overrep_figure_folder)) {
+  dir.create(category_overrep_figure_folder, recursive = TRUE)
+}
+
+sanitize_filename <- function(x) {
+  x <- as.character(x)
+  x <- str_squish(x)
+  x <- gsub("[^A-Za-z0-9_\\-]+", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- substr(x, 1, 80)
+  x
+}
+
+# ---------------------------------------------------------
+# 23A. Prepare category-level overrepresentation data
+# ---------------------------------------------------------
+
+category_overrep_plot_base <- category_screen_overrepresentation %>%
   mutate(
-    overall_total_observed_cases =
-      sum(overall_observed_case_count, na.rm = TRUE),
+    observed_case_share_percent =
+      observed_case_share_within_category * 100,
     
-    overall_observed_case_share =
-      overall_observed_case_count / overall_total_observed_cases,
+    expected_population_share_percent =
+      all_csr_screen_population_share * 100,
     
-    overall_observed_case_share_label =
-      paste0(round(overall_observed_case_share * 100, 2), "%")
-  )
-
-overall_screen_overrepresentation <- overall_screen_observed %>%
-  left_join(
-    all_csr_population_baseline_by_screen,
-    by = "SCREEN"
-  ) %>%
-  mutate(
-    overall_expected_cases_by_population =
-      overall_total_observed_cases * all_csr_screen_population_share,
-    
-    overall_expected_case_share =
-      all_csr_screen_population_share,
-    
-    overall_expected_case_share_label =
-      paste0(round(overall_expected_case_share * 100, 2), "%"),
-    
-    overall_observed_expected_ratio =
-      if_else(
-        overall_expected_cases_by_population > 0,
-        overall_observed_case_count / overall_expected_cases_by_population,
-        NA_real_
-      ),
-    
-    overall_excess_cases =
-      overall_observed_case_count - overall_expected_cases_by_population,
-    
-    overall_expected_cases_by_population_round =
-      round(overall_expected_cases_by_population, 2),
-    
-    overall_excess_cases_round =
-      round(overall_excess_cases, 2),
-    
-    overall_observed_expected_ratio_round =
-      round(overall_observed_expected_ratio, 2),
-    
-    overall_representation_level =
-      get_representation_level(
-        overall_observed_expected_ratio,
-        overall_observed_case_count
-      )
-  ) %>%
-  arrange(
-    desc(overall_observed_expected_ratio),
-    desc(overall_observed_case_count)
-  )
-
-safe_write_csv(
-  overall_screen_overrepresentation,
-  output_08_overall_screen_overrep
-)
-
-
-# =========================================================
-# 24. Figure 7:
-# Overall SCREEN-level observed-to-expected ratio
-# =========================================================
-
-overall_overrep_plot_df <- overall_screen_overrepresentation %>%
-  mutate(
-    SCREEN = factor(
-      SCREEN,
-      levels = overall_screen_overrepresentation %>%
-        arrange(overall_observed_expected_ratio) %>%
-        pull(SCREEN)
+    overrep_level_for_plot = case_when(
+      population_representation_level == "Below expected" ~ "Below expected",
+      population_representation_level == "Close to expected" ~ "Close to expected",
+      population_representation_level == "Moderately elevated" ~ "Moderately elevated",
+      population_representation_level == "Elevated" ~ "Elevated",
+      population_representation_level == "Strongly elevated" ~ "Strongly elevated",
+      population_representation_level == "Low case count" ~ "Low case count",
+      TRUE ~ "Other / missing"
     ),
     
-    overall_representation_level = factor(
-      overall_representation_level,
+    overrep_level_for_plot = factor(
+      overrep_level_for_plot,
       levels = c(
         "Below expected",
         "Close to expected",
@@ -106,172 +60,243 @@ overall_overrep_plot_df <- overall_screen_overrepresentation %>%
         "Elevated",
         "Strongly elevated",
         "Low case count",
-        "No denominator",
-        "Unclassified"
+        "Other / missing"
       )
-    ),
-    
-    ratio_label = if_else(
-      is.na(overall_observed_expected_ratio_round),
-      "",
-      sprintf("%.2f", overall_observed_expected_ratio_round)
     )
   )
 
-p_overall_overrep_ratio <- ggplot(
-  overall_overrep_plot_df,
-  aes(
-    x = overall_observed_expected_ratio_round,
-    y = SCREEN,
-    fill = overall_representation_level
-  )
-) +
-  geom_col(width = 0.7) +
-  geom_vline(
-    xintercept = 1,
-    linetype = "solid",
-    linewidth = 0.7
-  ) +
-  geom_vline(
-    xintercept = 1.25,
-    linetype = "dashed",
-    linewidth = 0.6
-  ) +
-  geom_vline(
-    xintercept = 1.5,
-    linetype = "dashed",
-    linewidth = 0.6
-  ) +
-  geom_vline(
-    xintercept = 2,
-    linetype = "dashed",
-    linewidth = 0.6
-  ) +
-  geom_text(
-    aes(label = ratio_label),
-    hjust = -0.15,
-    size = 3.2
-  ) +
-  scale_fill_manual(
-    values = c(
-      "Below expected" = "#2C7BB6",
-      "Close to expected" = "#D9D9D9",
-      "Moderately elevated" = "#FFFFBF",
-      "Elevated" = "#FDAE61",
-      "Strongly elevated" = "#D7191C",
-      "Low case count" = "#F0F0F0",
-      "No denominator" = "#BDBDBD",
-      "Unclassified" = "white"
-    ),
-    drop = FALSE
-  ) +
-  labs(
-    title = "Overall CSR Overrepresentation by EQI SCREEN",
-    subtitle = "Observed-to-expected ratio compares total CSR cases with the population distribution of all CSR-matched EQI blocks.",
-    x = "Observed-to-expected ratio",
-    y = "EQI SCREEN",
-    fill = "Representation level"
-  ) +
-  theme_minimal() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    legend.position = "bottom"
-  ) +
-  coord_cartesian(
-    xlim = c(
-      0,
-      max(overall_overrep_plot_df$overall_observed_expected_ratio_round, na.rm = TRUE) * 1.15
+category_list_for_overrep_charts <- category_overrep_plot_base %>%
+  distinct(Customer_Service_Requested, total_cases_in_category) %>%
+  arrange(desc(total_cases_in_category)) %>%
+  pull(Customer_Service_Requested)
+
+
+# =========================================================
+# 23B. Per-category O/E ratio chart
+#
+# This is the main overrepresentation chart.
+# Bar = observed / expected ratio
+# Reference line at 1.0 = expected level
+# Reference lines at 1.25, 1.5, 2.0 = elevated thresholds
+# =========================================================
+
+for (cat_name in category_list_for_overrep_charts) {
+  
+  one_category_df <- category_overrep_plot_base %>%
+    filter(Customer_Service_Requested == cat_name) %>%
+    filter(!is.na(SCREEN)) %>%
+    mutate(
+      SCREEN = factor(
+        SCREEN,
+        levels = one_category_df_order <- category_overrep_plot_base %>%
+          filter(Customer_Service_Requested == cat_name) %>%
+          arrange(observed_expected_ratio_by_all_csr_population) %>%
+          pull(SCREEN)
+      ),
+      
+      ratio_label = if_else(
+        is.na(observed_expected_ratio_by_all_csr_population_round),
+        "",
+        sprintf("%.2f", observed_expected_ratio_by_all_csr_population_round)
+      ),
+      
+      count_label = paste0("n=", observed_case_count)
     )
-  )
-
-ggsave(
-  filename = file.path(
-    figure_folder,
-    "fig_07_overall_screen_overrepresentation_ratio.png"
-  ),
-  plot = p_overall_overrep_ratio,
-  width = 11,
-  height = 7,
-  dpi = 300
-)
-
-
-# =========================================================
-# 25. Figure 8:
-# Overall observed CSR share vs expected population share
-# =========================================================
-
-overall_share_plot_df <- overall_screen_overrepresentation %>%
-  select(
-    SCREEN,
-    overall_observed_case_share,
-    overall_expected_case_share
-  ) %>%
-  pivot_longer(
-    cols = c(
-      overall_observed_case_share,
-      overall_expected_case_share
-    ),
-    names_to = "share_type",
-    values_to = "share"
-  ) %>%
-  mutate(
-    share_percent = share * 100,
-    
-    share_type = case_when(
-      share_type == "overall_observed_case_share" ~ "Observed CSR share",
-      share_type == "overall_expected_case_share" ~ "Expected population share",
-      TRUE ~ share_type
-    ),
-    
-    share_type = factor(
-      share_type,
-      levels = c(
-        "Observed CSR share",
-        "Expected population share"
+  
+  total_cat_cases <- unique(one_category_df$total_cases_in_category)
+  total_cat_cases <- total_cat_cases[!is.na(total_cat_cases)][1]
+  
+  p_category_overrep_ratio <- ggplot(
+    one_category_df,
+    aes(
+      x = observed_expected_ratio_by_all_csr_population_round,
+      y = SCREEN,
+      fill = overrep_level_for_plot
+    )
+  ) +
+    geom_col(width = 0.7) +
+    geom_vline(
+      xintercept = 1,
+      linetype = "solid",
+      linewidth = 0.7
+    ) +
+    geom_vline(
+      xintercept = 1.25,
+      linetype = "dashed",
+      linewidth = 0.6
+    ) +
+    geom_vline(
+      xintercept = 1.5,
+      linetype = "dashed",
+      linewidth = 0.6
+    ) +
+    geom_vline(
+      xintercept = 2,
+      linetype = "dashed",
+      linewidth = 0.6
+    ) +
+    geom_text(
+      aes(label = ratio_label),
+      hjust = -0.15,
+      size = 3.1
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Below expected" = "#2C7BB6",
+        "Close to expected" = "#D9D9D9",
+        "Moderately elevated" = "#FFFFBF",
+        "Elevated" = "#FDAE61",
+        "Strongly elevated" = "#D7191C",
+        "Low case count" = "#F0F0F0",
+        "Other / missing" = "white"
+      ),
+      drop = FALSE
+    ) +
+    labs(
+      title = paste0("Overrepresentation by EQI SCREEN: ", cat_name),
+      subtitle = paste0(
+        "Observed-to-expected ratio. Baseline = population distribution of all CSR-matched EQI blocks. Total category cases = ",
+        total_cat_cases,
+        "."
+      ),
+      x = "Observed-to-expected ratio",
+      y = "EQI SCREEN",
+      fill = "Representation level"
+    ) +
+    theme_minimal() +
+    theme(
+      panel.grid.major.y = element_blank(),
+      legend.position = "bottom"
+    ) +
+    coord_cartesian(
+      xlim = c(
+        0,
+        max(
+          one_category_df$observed_expected_ratio_by_all_csr_population_round,
+          na.rm = TRUE
+        ) * 1.20
+      )
+    )
+  
+  ggsave(
+    filename = file.path(
+      category_overrep_figure_folder,
+      paste0(
+        "category_overrepresentation_ratio_",
+        sanitize_filename(cat_name),
+        ".png"
       )
     ),
-    
-    SCREEN = factor(
+    plot = p_category_overrep_ratio,
+    width = 11,
+    height = 7,
+    dpi = 300
+  )
+}
+
+
+# =========================================================
+# 23C. Per-category observed share vs expected baseline chart
+#
+# This chart is more intuitive for explaining the baseline.
+# Bar 1 = observed share of this category's cases
+# Bar 2 = expected population share baseline
+# =========================================================
+
+for (cat_name in category_list_for_overrep_charts) {
+  
+  one_category_share_df <- category_overrep_plot_base %>%
+    filter(Customer_Service_Requested == cat_name) %>%
+    select(
+      Customer_Service_Requested,
       SCREEN,
-      levels = overall_screen_overrepresentation %>%
-        arrange(overall_observed_expected_ratio) %>%
-        pull(SCREEN)
+      observed_case_count,
+      total_cases_in_category,
+      observed_case_share_percent,
+      expected_population_share_percent,
+      observed_expected_ratio_by_all_csr_population_round
+    ) %>%
+    pivot_longer(
+      cols = c(
+        observed_case_share_percent,
+        expected_population_share_percent
+      ),
+      names_to = "share_type",
+      values_to = "share_percent"
+    ) %>%
+    mutate(
+      share_type = case_when(
+        share_type == "observed_case_share_percent" ~ "Observed category case share",
+        share_type == "expected_population_share_percent" ~ "Expected population share",
+        TRUE ~ share_type
+      ),
+      
+      share_type = factor(
+        share_type,
+        levels = c(
+          "Observed category case share",
+          "Expected population share"
+        )
+      )
     )
-  )
-
-p_overall_share_compare <- ggplot(
-  overall_share_plot_df,
-  aes(
-    x = share_percent,
-    y = SCREEN,
-    fill = share_type
-  )
-) +
-  geom_col(
-    position = position_dodge(width = 0.75),
-    width = 0.7
+  
+  screen_order_for_share <- category_overrep_plot_base %>%
+    filter(Customer_Service_Requested == cat_name) %>%
+    arrange(observed_expected_ratio_by_all_csr_population) %>%
+    pull(SCREEN)
+  
+  one_category_share_df <- one_category_share_df %>%
+    mutate(
+      SCREEN = factor(
+        SCREEN,
+        levels = screen_order_for_share
+      )
+    )
+  
+  total_cat_cases <- unique(one_category_share_df$total_cases_in_category)
+  total_cat_cases <- total_cat_cases[!is.na(total_cat_cases)][1]
+  
+  p_category_observed_expected_share <- ggplot(
+    one_category_share_df,
+    aes(
+      x = share_percent,
+      y = SCREEN,
+      fill = share_type
+    )
   ) +
-  labs(
-    title = "Overall CSR Share Compared with Population Baseline by EQI SCREEN",
-    subtitle = "Observed CSR share is compared with the expected share based on population in all CSR-matched EQI blocks.",
-    x = "Share (%)",
-    y = "EQI SCREEN",
-    fill = "Metric"
-  ) +
-  theme_minimal() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    legend.position = "bottom"
+    geom_col(
+      position = position_dodge(width = 0.75),
+      width = 0.7
+    ) +
+    labs(
+      title = paste0("Observed Share vs Population Baseline: ", cat_name),
+      subtitle = paste0(
+        "Observed share is this category's distribution across SCREEN groups. Expected share is the population baseline. Total category cases = ",
+        total_cat_cases,
+        "."
+      ),
+      x = "Share (%)",
+      y = "EQI SCREEN",
+      fill = "Metric"
+    ) +
+    theme_minimal() +
+    theme(
+      panel.grid.major.y = element_blank(),
+      legend.position = "bottom"
+    )
+  
+  ggsave(
+    filename = file.path(
+      category_overrep_figure_folder,
+      paste0(
+        "category_observed_vs_expected_share_",
+        sanitize_filename(cat_name),
+        ".png"
+      )
+    ),
+    plot = p_category_observed_expected_share,
+    width = 11,
+    height = 7,
+    dpi = 300
   )
-
-ggsave(
-  filename = file.path(
-    figure_folder,
-    "fig_08_overall_screen_observed_vs_expected_share.png"
-  ),
-  plot = p_overall_share_compare,
-  width = 11,
-  height = 7,
-  dpi = 300
-)
+}
