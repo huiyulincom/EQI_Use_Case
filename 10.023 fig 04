@@ -1,21 +1,16 @@
 # =========================================================
-# 23. Fig 04:
-# Category x SCREEN delay days chart with OVERALL baseline
+# 23. Fig 04A and Fig 04B:
+# Split delay charts with Fig05-style colors
 #
-# Row = CSR category x EQI SCREEN
-# Bars = SCREEN-specific average / median days
+# Fig 04A:
+# Response median days by CSR category x EQI SCREEN
 #
-# Sorting:
-# Highest SCREEN-specific median resolution days first.
+# Fig 04B:
+# Resolution median days by CSR category x EQI SCREEN
 #
-# Reference lines:
-# Response panel:
-#   overall response average
-#   overall response median
-#
-# Resolution panel:
-#   overall resolution average
-#   overall resolution median
+# Bars = SCREEN-specific median days
+# Colors = relative delay level compared with overall median/average
+# Lines = overall median and overall average
 # =========================================================
 
 category_screen_delay_chart_data <- category_screen_chart_data %>%
@@ -26,10 +21,12 @@ category_screen_delay_chart_data <- category_screen_chart_data %>%
     Customer_Service_Requested,
     SCREEN,
     category_screen_label,
+    
     observed_case_count,
     total_cases_in_category,
     priority_review_group,
     priority_rank,
+    
     population_representation_level,
     observed_expected_ratio_by_all_csr_population_round,
     
@@ -50,120 +47,12 @@ category_screen_delay_chart_data <- category_screen_chart_data %>%
     
     sort_resolution_ratio,
     sort_overrep_ratio
-  ) %>%
-  mutate(
-    sort_resolution_median_days = if_else(
-      is.na(resolution_days_median_round),
-      -Inf,
-      resolution_days_median_round
-    ),
-    
-    sort_resolution_average_days = if_else(
-      is.na(resolution_days_average_round),
-      -Inf,
-      resolution_days_average_round
-    ),
-    
-    sort_response_median_days = if_else(
-      is.na(response_days_median_round),
-      -Inf,
-      response_days_median_round
-    )
-  ) %>%
-  arrange(
-    desc(sort_resolution_median_days),
-    desc(sort_resolution_average_days),
-    desc(sort_response_median_days),
-    desc(sort_overrep_ratio),
-    desc(observed_case_count)
-  ) %>%
-  slice_head(n = top_n_category_screen_for_delay_bar)
+  )
 
 safe_write_csv(
   category_screen_delay_chart_data,
   output_08_category_screen_delay_chart_data
 )
-
-# IMPORTANT:
-# For horizontal bar charts, factor levels appear from bottom to top.
-# We reverse the sorted order so the highest values appear at the top.
-category_screen_label_order <- rev(
-  unique(category_screen_delay_chart_data$category_screen_label)
-)
-
-category_screen_delay_chart_data <- category_screen_delay_chart_data %>%
-  mutate(
-    category_screen_label = factor(
-      category_screen_label,
-      levels = category_screen_label_order
-    )
-  )
-
-screen_delay_long <- category_screen_delay_chart_data %>%
-  select(
-    category_screen_label,
-    Customer_Service_Requested,
-    SCREEN,
-    observed_case_count,
-    
-    response_days_average_round,
-    response_days_median_round,
-    resolution_days_average_round,
-    resolution_days_median_round
-  ) %>%
-  pivot_longer(
-    cols = c(
-      response_days_average_round,
-      response_days_median_round,
-      resolution_days_average_round,
-      resolution_days_median_round
-    ),
-    names_to = "metric",
-    values_to = "days"
-  ) %>%
-  mutate(
-    time_type = case_when(
-      metric %in% c(
-        "response_days_average_round",
-        "response_days_median_round"
-      ) ~ "Response",
-      
-      metric %in% c(
-        "resolution_days_average_round",
-        "resolution_days_median_round"
-      ) ~ "Resolution",
-      
-      TRUE ~ "Other"
-    ),
-    
-    statistic = case_when(
-      metric %in% c(
-        "response_days_average_round",
-        "resolution_days_average_round"
-      ) ~ "SCREEN average",
-      
-      metric %in% c(
-        "response_days_median_round",
-        "resolution_days_median_round"
-      ) ~ "SCREEN median",
-      
-      TRUE ~ metric
-    ),
-    
-    time_type = factor(
-      time_type,
-      levels = c("Response", "Resolution")
-    ),
-    
-    statistic = factor(
-      statistic,
-      levels = c(
-        "SCREEN average",
-        "SCREEN median"
-      )
-    )
-  ) %>%
-  filter(!is.na(days))
 
 
 # ---------------------------------------------------------
@@ -176,99 +65,150 @@ overall_response_median  <- overall_delay_summary$response_days_median_round[1]
 overall_resolution_average <- overall_delay_summary$resolution_days_average_round[1]
 overall_resolution_median  <- overall_delay_summary$resolution_days_median_round[1]
 
-overall_baseline_line_df <- tibble::tibble(
-  time_type = c(
-    "Response",
-    "Response",
-    "Resolution",
-    "Resolution"
-  ),
-  
-  overall_metric = c(
-    "Overall average",
-    "Overall median",
-    "Overall average",
-    "Overall median"
-  ),
-  
-  overall_days = c(
-    overall_response_average,
-    overall_response_median,
-    overall_resolution_average,
-    overall_resolution_median
-  )
-) %>%
+
+# =========================================================
+# Fig 04A: Response median days
+# =========================================================
+
+response_chart_data <- category_screen_delay_chart_data %>%
+  filter(
+    !is.na(response_days_median_round)
+  ) %>%
   mutate(
-    time_type = factor(
-      time_type,
-      levels = c("Response", "Resolution")
+    response_delay_level_for_plot = case_when(
+      is.na(response_days_median_round) ~ "Other / missing",
+      
+      !is.na(overall_response_median) &
+        response_days_median_round <= overall_response_median ~
+        "At or below overall median",
+      
+      !is.na(overall_response_average) &
+        response_days_median_round <= overall_response_average ~
+        "Between overall median and average",
+      
+      !is.na(overall_response_average) &
+        response_days_median_round <= overall_response_average * 1.25 ~
+        "Moderately above overall average",
+      
+      !is.na(overall_response_average) &
+        response_days_median_round <= overall_response_average * 1.50 ~
+        "Above overall average",
+      
+      !is.na(overall_response_average) &
+        response_days_median_round > overall_response_average * 1.50 ~
+        "Much above overall average",
+      
+      TRUE ~ "Other / missing"
     ),
     
-    overall_metric = factor(
-      overall_metric,
+    response_delay_level_for_plot = factor(
+      response_delay_level_for_plot,
       levels = c(
-        "Overall average",
-        "Overall median"
+        "At or below overall median",
+        "Between overall median and average",
+        "Moderately above overall average",
+        "Above overall average",
+        "Much above overall average",
+        "Other / missing"
       )
+    ),
+    
+    sort_response_median_days = if_else(
+      is.na(response_days_median_round),
+      -Inf,
+      response_days_median_round
     )
   ) %>%
-  filter(!is.na(overall_days))
+  arrange(
+    desc(sort_response_median_days),
+    desc(sort_overrep_ratio),
+    desc(observed_case_count)
+  ) %>%
+  slice_head(n = top_n_category_screen_for_delay_bar)
 
+response_chart_data <- response_chart_data %>%
+  mutate(
+    category_screen_label = factor(
+      category_screen_label,
+      levels = rev(unique(category_screen_label))
+    ),
+    
+    response_label = sprintf("%.2f", response_days_median_round)
+  )
 
-# ---------------------------------------------------------
-# Draw Fig 04
-# ---------------------------------------------------------
+response_baseline_line_df <- tibble::tibble(
+  baseline_value = c(
+    overall_response_average,
+    overall_response_median
+  ),
+  baseline_label = c(
+    "Overall response average",
+    "Overall response median"
+  )
+) %>%
+  filter(!is.na(baseline_value)) %>%
+  mutate(
+    baseline_label = factor(
+      baseline_label,
+      levels = c(
+        "Overall response average",
+        "Overall response median"
+      )
+    )
+  )
 
-category_screen_delay_chart_height <- max(
+response_chart_height <- max(
   12,
-  length(unique(screen_delay_long$category_screen_label)) * 0.30
+  length(unique(response_chart_data$category_screen_label)) * 0.30
 )
 
-p_category_screen_delay_overall_baseline <- ggplot(
-  screen_delay_long,
+p_response_median_days <- ggplot(
+  response_chart_data,
   aes(
-    x = days,
+    x = response_days_median_round,
     y = category_screen_label,
-    fill = statistic
+    fill = response_delay_level_for_plot
   )
 ) +
-  geom_col(
-    position = position_dodge(width = 0.75),
-    width = 0.7
-  ) +
+  geom_col(width = 0.7) +
   geom_vline(
-    data = overall_baseline_line_df,
+    data = response_baseline_line_df,
     aes(
-      xintercept = overall_days,
-      linetype = overall_metric
+      xintercept = baseline_value,
+      linetype = baseline_label
     ),
     linewidth = 0.8,
     inherit.aes = FALSE
   ) +
+  geom_text(
+    aes(label = response_label),
+    hjust = -0.15,
+    size = 3
+  ) +
   scale_fill_manual(
     values = c(
-      "SCREEN average" = "#FDAE61",
-      "SCREEN median" = "#2C7BB6"
+      "At or below overall median" = "#2C7BB6",
+      "Between overall median and average" = "#D9D9D9",
+      "Moderately above overall average" = "#FFFFBF",
+      "Above overall average" = "#FDAE61",
+      "Much above overall average" = "#D7191C",
+      "Other / missing" = "white"
     ),
     drop = FALSE
   ) +
   scale_linetype_manual(
     values = c(
-      "Overall average" = "solid",
-      "Overall median" = "dashed"
+      "Overall response average" = "solid",
+      "Overall response median" = "dashed"
     ),
     drop = FALSE
   ) +
-  facet_wrap(
-    ~ time_type,
-    scales = "free_x"
-  ) +
   labs(
-    title = "Response and Resolution Days by CSR Category x EQI SCREEN",
-    subtitle = "Sorted by SCREEN-specific median resolution days. Bars show category x SCREEN values; vertical lines show overall CSR average and median baselines.",
-    x = "Days",
+    title = "Response Median Days by CSR Category x EQI SCREEN",
+    subtitle = "Sorted by SCREEN-specific median response days. Vertical lines show overall response average and median.",
+    x = "Median response days",
     y = "CSR Category x EQI SCREEN",
-    fill = "SCREEN metric",
+    fill = "Response delay level",
     linetype = "Overall baseline"
   ) +
   theme_minimal() +
@@ -279,20 +219,204 @@ p_category_screen_delay_overall_baseline <- ggplot(
   guides(
     fill = guide_legend(order = 1),
     linetype = guide_legend(order = 2)
+  ) +
+  coord_cartesian(
+    xlim = c(
+      0,
+      max(response_chart_data$response_days_median_round, na.rm = TRUE) * 1.15
+    )
   )
 
-fig04_path <- file.path(
+fig04a_path <- file.path(
   figure_folder,
-  "fig_04_category_screen_delay_all_metrics_with_overall_baseline_sorted.png"
+  "fig_04a_category_screen_response_median_days_with_overall_baseline_sorted.png"
 )
 
 ggsave(
-  filename = fig04_path,
-  plot = p_category_screen_delay_overall_baseline,
+  filename = fig04a_path,
+  plot = p_response_median_days,
   width = 15,
-  height = category_screen_delay_chart_height,
+  height = response_chart_height,
   dpi = 300
 )
 
-cat("Wrote Fig 04:", fig04_path, "\n")
-cat("Fig 04 exists:", file.exists(fig04_path), "\n")
+cat("Wrote Fig 04A:", fig04a_path, "\n")
+cat("Fig 04A exists:", file.exists(fig04a_path), "\n")
+
+
+# =========================================================
+# Fig 04B: Resolution median days
+# =========================================================
+
+resolution_chart_data <- category_screen_delay_chart_data %>%
+  filter(
+    !is.na(resolution_days_median_round)
+  ) %>%
+  mutate(
+    resolution_delay_level_for_plot = case_when(
+      is.na(resolution_days_median_round) ~ "Other / missing",
+      
+      !is.na(overall_resolution_median) &
+        resolution_days_median_round <= overall_resolution_median ~
+        "At or below overall median",
+      
+      !is.na(overall_resolution_average) &
+        resolution_days_median_round <= overall_resolution_average ~
+        "Between overall median and average",
+      
+      !is.na(overall_resolution_average) &
+        resolution_days_median_round <= overall_resolution_average * 1.25 ~
+        "Moderately above overall average",
+      
+      !is.na(overall_resolution_average) &
+        resolution_days_median_round <= overall_resolution_average * 1.50 ~
+        "Above overall average",
+      
+      !is.na(overall_resolution_average) &
+        resolution_days_median_round > overall_resolution_average * 1.50 ~
+        "Much above overall average",
+      
+      TRUE ~ "Other / missing"
+    ),
+    
+    resolution_delay_level_for_plot = factor(
+      resolution_delay_level_for_plot,
+      levels = c(
+        "At or below overall median",
+        "Between overall median and average",
+        "Moderately above overall average",
+        "Above overall average",
+        "Much above overall average",
+        "Other / missing"
+      )
+    ),
+    
+    sort_resolution_median_days = if_else(
+      is.na(resolution_days_median_round),
+      -Inf,
+      resolution_days_median_round
+    )
+  ) %>%
+  arrange(
+    desc(sort_resolution_median_days),
+    desc(sort_overrep_ratio),
+    desc(observed_case_count)
+  ) %>%
+  slice_head(n = top_n_category_screen_for_delay_bar)
+
+resolution_chart_data <- resolution_chart_data %>%
+  mutate(
+    category_screen_label = factor(
+      category_screen_label,
+      levels = rev(unique(category_screen_label))
+    ),
+    
+    resolution_label = sprintf("%.2f", resolution_days_median_round)
+  )
+
+resolution_baseline_line_df <- tibble::tibble(
+  baseline_value = c(
+    overall_resolution_average,
+    overall_resolution_median
+  ),
+  baseline_label = c(
+    "Overall resolution average",
+    "Overall resolution median"
+  )
+) %>%
+  filter(!is.na(baseline_value)) %>%
+  mutate(
+    baseline_label = factor(
+      baseline_label,
+      levels = c(
+        "Overall resolution average",
+        "Overall resolution median"
+      )
+    )
+  )
+
+resolution_chart_height <- max(
+  12,
+  length(unique(resolution_chart_data$category_screen_label)) * 0.30
+)
+
+p_resolution_median_days <- ggplot(
+  resolution_chart_data,
+  aes(
+    x = resolution_days_median_round,
+    y = category_screen_label,
+    fill = resolution_delay_level_for_plot
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_vline(
+    data = resolution_baseline_line_df,
+    aes(
+      xintercept = baseline_value,
+      linetype = baseline_label
+    ),
+    linewidth = 0.8,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    aes(label = resolution_label),
+    hjust = -0.15,
+    size = 3
+  ) +
+  scale_fill_manual(
+    values = c(
+      "At or below overall median" = "#2C7BB6",
+      "Between overall median and average" = "#D9D9D9",
+      "Moderately above overall average" = "#FFFFBF",
+      "Above overall average" = "#FDAE61",
+      "Much above overall average" = "#D7191C",
+      "Other / missing" = "white"
+    ),
+    drop = FALSE
+  ) +
+  scale_linetype_manual(
+    values = c(
+      "Overall resolution average" = "solid",
+      "Overall resolution median" = "dashed"
+    ),
+    drop = FALSE
+  ) +
+  labs(
+    title = "Resolution Median Days by CSR Category x EQI SCREEN",
+    subtitle = "Sorted by SCREEN-specific median resolution days. Vertical lines show overall resolution average and median.",
+    x = "Median resolution days",
+    y = "CSR Category x EQI SCREEN",
+    fill = "Resolution delay level",
+    linetype = "Overall baseline"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  ) +
+  guides(
+    fill = guide_legend(order = 1),
+    linetype = guide_legend(order = 2)
+  ) +
+  coord_cartesian(
+    xlim = c(
+      0,
+      max(resolution_chart_data$resolution_days_median_round, na.rm = TRUE) * 1.15
+    )
+  )
+
+fig04b_path <- file.path(
+  figure_folder,
+  "fig_04b_category_screen_resolution_median_days_with_overall_baseline_sorted.png"
+)
+
+ggsave(
+  filename = fig04b_path,
+  plot = p_resolution_median_days,
+  width = 15,
+  height = resolution_chart_height,
+  dpi = 300
+)
+
+cat("Wrote Fig 04B:", fig04b_path, "\n")
+cat("Fig 04B exists:", file.exists(fig04b_path), "\n")
